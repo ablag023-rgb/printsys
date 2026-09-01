@@ -41,6 +41,7 @@ FastAPI + Jinja2 + HTMX + PostgreSQL 16 (SQLAlchemy 2.0 async + asyncpg + Alembi
 | [docs/deployment.md](docs/deployment.md) | развёртывание dev/prod, env, bind-mount, миграции, backup |
 | [docs/user_guide.md](docs/user_guide.md) | руководство оператора |
 | [docs/dev_guide.md](docs/dev_guide.md) | руководство разработчика |
+| [docs/printing_notes.md](docs/printing_notes.md) | архитектура печати, ограничения объёмов, roadmap v0.4 |
 | [docs/SPEC.md](docs/SPEC.md) | исходная спецификация |
 | [CLAUDE.md](CLAUDE.md) | память проекта для Claude Code (правила, соглашения) |
 

@@ -1,12 +1,16 @@
 """Сборка PDF на дело:
-титульник (reportlab) → xlsx-конверт (reportlab) → готовые PDF (pypdf) → подвал КСР/NN.
+титульник (reportlab) → xlsx-конверт (LibreOffice headless) → готовые PDF (pypdf) → подвал КСР/NN.
 Кириллица через DejaVu Sans (стандартно в fonts-dejavu-core).
+Форматирование xlsx сохраняется благодаря LibreOffice (устанавливается в Dockerfile).
 """
 from __future__ import annotations
 
 import io
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from openpyxl import load_workbook
 from pypdf import PdfReader, PdfWriter
@@ -119,8 +123,52 @@ def build_title_page(case: Dict[str, Any], slots_cfg: List[Dict[str, Any]]) -> b
     return buf.getvalue()
 
 
+LIBREOFFICE_BIN = shutil.which("libreoffice") or shutil.which("soffice") or "libreoffice"
+
+
 def xlsx_to_pdf_bytes(xlsx_path: Path, file_name: str) -> bytes:
-    """Простой рендер xlsx: строки листа как текст. Форматирование не сохраняется."""
+    """Конвертирует xlsx в PDF через LibreOffice headless.
+
+    Форматирование Excel сохраняется (шрифты, ширина колонок, объединённые ячейки, границы).
+    Требует libreoffice-core + libreoffice-calc в образе (см. Dockerfile).
+
+    Fallback: если LibreOffice недоступен или упал — построчный текстовый рендер (совместимость).
+    """
+    try:
+        with tempfile.TemporaryDirectory(prefix="xlsx2pdf_") as tmpdir:
+            tmpdir_p = Path(tmpdir)
+            # Копируем исходник в tmpdir с ASCII-именем, чтобы избежать проблем с Cyrillic в путях
+            src_copy = tmpdir_p / "input.xlsx"
+            shutil.copyfile(xlsx_path, src_copy)
+            # HOME для LibreOffice (создаёт профиль ~/.config/libreoffice)
+            env_home = tmpdir_p / "lohome"
+            env_home.mkdir(exist_ok=True)
+            proc = subprocess.run(
+                [
+                    LIBREOFFICE_BIN,
+                    "--headless",
+                    "--norestore",
+                    "--nolockcheck",
+                    "--nodefault",
+                    "--nologo",
+                    "-env:UserInstallation=file://" + str(env_home),
+                    "--convert-to", "pdf",
+                    "--outdir", str(tmpdir_p),
+                    str(src_copy),
+                ],
+                capture_output=True, timeout=60,
+            )
+            out_pdf = tmpdir_p / "input.pdf"
+            if proc.returncode == 0 and out_pdf.exists():
+                return out_pdf.read_bytes()
+    except Exception:
+        pass
+    # Fallback: текстовый рендер
+    return _xlsx_to_pdf_text_fallback(xlsx_path, file_name)
+
+
+def _xlsx_to_pdf_text_fallback(xlsx_path: Path, file_name: str) -> bytes:
+    """Резервный простой рендер xlsx: строки листа как текст."""
     _register_fonts()
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
@@ -133,7 +181,6 @@ def xlsx_to_pdf_bytes(xlsx_path: Path, file_name: str) -> bytes:
     c.setFont(fname, fsize)
     c.drawString(left, y, f"[Справка] {file_name}")
     y -= line_h * 1.4
-
     try:
         wb = load_workbook(xlsx_path, data_only=True, read_only=True)
         sheet = wb.active
@@ -150,7 +197,6 @@ def xlsx_to_pdf_bytes(xlsx_path: Path, file_name: str) -> bytes:
             if not text:
                 y -= line_h * 0.5
                 continue
-            # Простой word-wrap: режем по ~140 символов
             fname, fsize = _f(8)
             c.setFont(fname, fsize)
             max_chars = 140
@@ -167,10 +213,45 @@ def xlsx_to_pdf_bytes(xlsx_path: Path, file_name: str) -> bytes:
         fname, fsize = _f(10)
         c.setFont(fname, fsize)
         c.drawString(left, y, f"[Ошибка чтения xlsx: {e}]")
-
     c.showPage()
     c.save()
     return buf.getvalue()
+
+
+def file_to_pdf_bytes(file_path: Path, footer_ksr: Optional[str], footer_cfg: Dict[str, Any]) -> bytes:
+    """Один файл (xlsx/pdf/иное) → PDF с опциональным подвалом.
+
+    Используется для печати одного файла из дела.
+    """
+    writer = PdfWriter()
+    suffix = file_path.suffix.lower()
+    if suffix in (".xlsx", ".xls"):
+        pdf_bytes = xlsx_to_pdf_bytes(file_path, file_path.name)
+        for p in PdfReader(io.BytesIO(pdf_bytes)).pages:
+            writer.add_page(p)
+    elif suffix == ".pdf":
+        try:
+            for p in PdfReader(str(file_path)).pages:
+                writer.add_page(p)
+        except Exception:
+            pass
+    else:
+        for p in PdfReader(io.BytesIO(_stub_page(file_path.name))).pages:
+            writer.add_page(p)
+
+    if footer_ksr and footer_cfg.get("enabled", True):
+        size = int(footer_cfg.get("size", 9))
+        color = footer_cfg.get("color", "#BFBFBF")
+        for i, page in enumerate(writer.pages, start=1):
+            box = page.mediabox
+            w, h = float(box.width), float(box.height)
+            text = f"{footer_ksr}/{str(i).zfill(2)}"
+            overlay = make_footer_overlay(w, h, text, size, color)
+            page.merge_page(PdfReader(io.BytesIO(overlay)).pages[0])
+
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
 
 
 def make_footer_overlay(page_width: float, page_height: float, text: str, size: int, color_hex: str) -> bytes:
@@ -188,9 +269,14 @@ def make_footer_overlay(page_width: float, page_height: float, text: str, size: 
     return buf.getvalue()
 
 
-def build_case_pdf(case: Dict[str, Any], slots_cfg: List[Dict[str, Any]], footer_cfg: Dict[str, Any], with_title_page: bool) -> bytes:
-    """Собрать финальный PDF дела."""
-    writer = PdfWriter()
+def _add_case_pages(writer: PdfWriter, case: Dict[str, Any], slots_cfg: List[Dict[str, Any]],
+                    footer_cfg: Dict[str, Any], with_title_page: bool) -> None:
+    """Добавить страницы одного дела в writer, с локальной нумерацией подвала.
+
+    Подвал считается **внутри дела** (КСР/01, КСР/02...) — что критично для сшивания,
+    так как каждое дело физически идёт отдельным сшитым блоком.
+    """
+    start_idx = len(writer.pages)
 
     if with_title_page:
         title_bytes = build_title_page(case, slots_cfg)
@@ -215,23 +301,45 @@ def build_case_pdf(case: Dict[str, Any], slots_cfg: List[Dict[str, Any]], footer
                 except Exception:
                     pass
             else:
-                # Заглушка
                 stub = _stub_page(f["name"])
                 for p in PdfReader(io.BytesIO(stub)).pages:
                     writer.add_page(p)
 
-    # Подвал КСР/NN на каждую страницу
+    # Подвал КСР/NN — нумерация в рамках дела
     if footer_cfg.get("enabled", True):
         size = int(footer_cfg.get("size", 9))
         color = footer_cfg.get("color", "#BFBFBF")
-        for i, page in enumerate(writer.pages, start=1):
+        pages = writer.pages
+        for local_i, page in enumerate(pages[start_idx:], start=1):
             box = page.mediabox
             w, h = float(box.width), float(box.height)
-            text = f"{case['ksr']}/{str(i).zfill(2)}"
+            text = f"{case['ksr']}/{str(local_i).zfill(2)}"
             overlay = make_footer_overlay(w, h, text, size, color)
             overlay_page = PdfReader(io.BytesIO(overlay)).pages[0]
             page.merge_page(overlay_page)
 
+
+def build_case_pdf(case: Dict[str, Any], slots_cfg: List[Dict[str, Any]],
+                   footer_cfg: Dict[str, Any], with_title_page: bool) -> bytes:
+    """Собрать PDF одного дела."""
+    writer = PdfWriter()
+    _add_case_pages(writer, case, slots_cfg, footer_cfg, with_title_page)
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
+def build_batch_pdf(cases: List[Dict[str, Any]], slots_cfg: List[Dict[str, Any]],
+                    footer_cfg: Dict[str, Any], with_title_page: bool) -> bytes:
+    """Собрать один PDF на несколько дел — для пакетной печати в один диалог.
+
+    Дела идут подряд, каждое разделяется собственным титульным листом.
+    Подвал `КСР/NN` нумеруется в рамках каждого дела — чтобы сшивальщик мог
+    собрать страницы в блоки, если пачка перемешается.
+    """
+    writer = PdfWriter()
+    for case in cases:
+        _add_case_pages(writer, case, slots_cfg, footer_cfg, with_title_page)
     out = io.BytesIO()
     writer.write(out)
     return out.getvalue()

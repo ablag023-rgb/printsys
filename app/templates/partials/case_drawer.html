@@ -32,7 +32,12 @@
           <div class="slot-body">
             <div class="slot-name">{{ s.name }}{% if files|length > 1 %}<span class="dup-warn">{{ files|length }} файла</span>{% endif %}</div>
             {% for f in files %}
-              <div class="slot-file" title="{{ f.path }}">{{ f.name }}</div>
+              <div style="display:flex;align-items:center;gap:6px;margin-top:2px">
+                <div class="slot-file" title="{{ f.path }}" style="flex:1">{{ f.name }}</div>
+                <a class="icon-btn sm" title="Напечатать только этот файл"
+                   href="/cases/{{ c.ksr }}/file/pdf?path={{ f.path|urlencode }}"
+                   target="_blank" style="flex-shrink:0">🖨</a>
+              </div>
             {% endfor %}
           </div>
         </div>

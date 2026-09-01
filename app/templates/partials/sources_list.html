@@ -49,21 +49,47 @@
 {% endfor %}
 
 <div style="margin-top:20px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px;box-shadow:var(--shadow)">
-  <h3 style="margin:0 0 10px;font-size:14px;font-weight:600">Добавить папку</h3>
-  <form hx-post="/sources/add" hx-target="#sources-panel" hx-swap="innerHTML"
+  <h3 style="margin:0 0 10px;font-size:14px;font-weight:600">Загрузить папку</h3>
+  <div style="color:var(--text-muted);font-size:12px;margin-bottom:12px">
+    Выберите папку у себя на компьютере — браузер отправит всё её содержимое (включая подпапки) на сервер.
+    Работает в Chrome, Edge, Firefox.
+  </div>
+  <form id="upload-form" onsubmit="return uploadFolder(event)"
         style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
     <div class="field" style="flex:1 1 200px">
       <label>Название</label>
-      <input class="input" name="name" placeholder="Например: ТЭ Q3 2026" required>
+      <input class="input" name="name" id="upload-name" placeholder="Например: ТЭ Q3 2026" required>
     </div>
     <div class="field" style="flex:2 1 300px">
-      <label>Путь внутри контейнера</label>
-      <input class="input" name="path" placeholder="/data/demo" required>
+      <label>Папка</label>
+      <input class="input" type="file" id="upload-files" webkitdirectory multiple required>
     </div>
-    <button class="btn primary" type="submit">Добавить</button>
+    <button class="btn primary" type="submit" id="upload-submit">Загрузить и сканировать</button>
   </form>
-  <div style="margin-top:10px;color:var(--text-muted);font-size:12px">
-    Разрешённые корни: {% for r in roots %}<code class="mono">{{ r }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
-    Настройте bind-mount в <code class="mono">docker-compose.yml</code>.
+  <div id="upload-progress" style="margin-top:10px;font-size:12px;color:var(--text-muted);display:none">
+    <div id="upload-progress-text"></div>
+    <div class="progress-bar" style="margin-top:6px;height:6px;background:var(--surface-2);border-radius:3px;overflow:hidden">
+      <div id="upload-progress-fill" style="height:100%;background:var(--accent);border-radius:3px;width:0%;transition:width .2s"></div>
+    </div>
   </div>
+
+  <details style="margin-top:20px">
+    <summary style="cursor:pointer;font-size:13px;color:var(--text-muted);font-weight:500">Или добавить существующую bind-mount папку (админ-режим)</summary>
+    <form hx-post="/sources/add" hx-target="#sources-panel" hx-swap="innerHTML"
+          style="display:flex;gap:10px;align-items:end;flex-wrap:wrap;margin-top:12px">
+      <div class="field" style="flex:1 1 200px">
+        <label>Название</label>
+        <input class="input" name="name" placeholder="Например: Сетевая ТЭ Q3" required>
+      </div>
+      <div class="field" style="flex:2 1 300px">
+        <label>Путь внутри контейнера</label>
+        <input class="input" name="path" placeholder="/data/demo" required>
+      </div>
+      <button class="btn" type="submit">Добавить</button>
+    </form>
+    <div style="margin-top:10px;color:var(--text-muted);font-size:12px">
+      Разрешённые корни: {% for r in roots %}<code class="mono">{{ r }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
+      Настройте bind-mount в <code class="mono">docker-compose.yml</code>.
+    </div>
+  </details>
 </div>

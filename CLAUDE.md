@@ -22,7 +22,8 @@
 
 - Python 3.12 + **FastAPI 0.115** + **Jinja2** + **HTMX 1.9** — SSR-веб без фронт-сборки
 - **PostgreSQL 16** + **SQLAlchemy 2.0 async** + **asyncpg** + **Alembic** — БД и миграции
-- **openpyxl** — парсинг xlsx-справок
+- **openpyxl** — парсинг xlsx-справок (извлечение метаданных)
+- **LibreOffice headless** (пакеты `libreoffice-core libreoffice-calc`) — конвертация xlsx→PDF с сохранением форматирования Excel
 - **pypdf 5** + **reportlab 4** — сборка PDF, кириллица через DejaVu Sans (пакет `fonts-dejavu-core`)
 - **Docker Compose** — dev (`docker-compose.yml`) и prod (`docker-compose.prod.yml`)
 - **pytest + pytest-asyncio + httpx** — тесты
@@ -50,9 +51,11 @@ printsys/
 │   ├── services.py            оркестрация scan_source/scan_all
 │   ├── pdf.py                 title page + xlsx→pdf + copy pdfs + footer overlay
 │   ├── templates.py           Jinja2 init, fmt_date filter
+│   ├── logging_ring.py        in-memory ring buffer для вкладки «Логи»
 │   ├── routes/
-│   │   ├── cases.py           HTMX: list, drawer, delete, bulk, PDF
-│   │   ├── sources.py         HTMX: list, add, delete, scan
+│   │   ├── cases.py           HTMX: list, drawer, delete, bulk, PDF (single/file/batch)
+│   │   ├── sources.py         HTMX: list, add (bind-mount), upload (загрузка папки), delete, scan
+│   │   ├── logs.py            HTMX: вкладка «Логи» с фильтром по уровню
 │   │   └── settings_routes.py HTMX: slots, labels, footer, title, export/import
 │   ├── templates/
 │   │   ├── index.html                header + tabs + panels
@@ -129,12 +132,12 @@ docker compose exec db pg_dump -U printsys printsys > backup.sql
 - **Живой прогон** обязателен перед объявлением «готово»: `docker compose up`, добавить источник, отсканировать, открыть PDF, приложить tail лога.
 - **Не менять** бизнес-правила из §5 без обсуждения с пользователем — они выстраданы.
 
-## 9. Известные ограничения v0.2
+## 9. Известные ограничения v0.3
 
-1. **xlsx → PDF** — построчный текстовый рендер, форматирование Excel не сохраняется. Для точной репликации — интеграция LibreOffice в Dockerfile (`libreoffice --headless --convert-to pdf`), запланировано в v0.3.
-2. **Пакетная печать** открывает N вкладок; для каждой пользователь жмёт Ctrl+P. Полноавтоматической печати без диалога не будет — это ограничение безопасности браузеров.
+1. **Пакетная печать 100+ дел** — сейчас синхронная сборка одного PDF. Для 100+ дел время растёт линейно (~2 сек на дело с LibreOffice), файл раздувается до 500+ МБ. Рекомендация исследования — реализовать async chunking через ARQ + SSE + Chrome `--kiosk-printing`. Отдельная веха.
+2. **Chrome `--kiosk-printing` для silent-print** пачек — не настроено, оператор должен нажимать Ctrl+P (или запустить браузер с этим флагом на своей машине).
 3. **Однопользовательский режим без аутентификации** — разворачивать только во внутренней сети.
-4. **Bind-mount как `ro` в prod** — контейнер не может изменить/удалить исходные документы (по дизайну).
+4. **Bind-mount как `ro` в prod** — контейнер не может изменить/удалить исходные документы. Загруженные через UI папки лежат в отдельном writeable volume `/data/uploads/`.
 5. **Метаданные из Справки** извлекаются по конфигу лейблов — если xlsx-шаблон нестандартный, дополни синонимы в UI «Настройки → Парсинг Справки».
 
 ## 10. Контакты и связанные проекты

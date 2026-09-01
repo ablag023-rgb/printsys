@@ -1,0 +1,57 @@
+<div class="filterbar">
+  <form hx-get="/logs" hx-target="#logs-panel" hx-swap="innerHTML" hx-trigger="change"
+        style="display:flex;gap:10px;align-items:end;flex:1">
+    <div class="field">
+      <label>Уровень</label>
+      <select name="level" class="select">
+        <option value="" {% if not level %}selected{% endif %}>Все</option>
+        <option value="INFO" {% if level=='INFO' %}selected{% endif %}>INFO</option>
+        <option value="WARNING" {% if level=='WARNING' %}selected{% endif %}>WARNING</option>
+        <option value="ERROR" {% if level=='ERROR' %}selected{% endif %}>ERROR</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Строк</label>
+      <select name="tail" class="select">
+        {% for n in [50,100,200,500] %}<option value="{{ n }}" {% if tail==n %}selected{% endif %}>{{ n }}</option>{% endfor %}
+      </select>
+    </div>
+  </form>
+  <button class="btn" hx-get="/logs?tail={{ tail }}&level={{ level }}" hx-target="#logs-panel" hx-swap="innerHTML">↻ Обновить</button>
+  <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted);cursor:pointer">
+    <input type="checkbox" id="logs-autorefresh" onchange="toggleLogsAutorefresh(this)"> авто ×5с
+  </label>
+</div>
+
+<div class="card">
+  {% if not entries %}
+    <div class="empty"><h3>Логов пока нет</h3><p>Появятся здесь по мере работы сервера.</p></div>
+  {% else %}
+    <table style="font-size:12px">
+      <thead>
+        <tr>
+          <th style="width:100px">Время</th>
+          <th style="width:80px">Уровень</th>
+          <th style="width:180px">Логгер</th>
+          <th>Сообщение</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for e in entries %}
+          <tr>
+            <td><span class="date set">{{ e.ts_str }}</span></td>
+            <td>
+              {% if e.level == 'ERROR' %}<span class="dot err">ERROR</span>
+              {% elif e.level == 'WARNING' %}<span class="dot warn">WARN</span>
+              {% elif e.level == 'INFO' %}<span class="dot muted">INFO</span>
+              {% else %}<span class="dot muted">{{ e.level }}</span>{% endif %}
+            </td>
+            <td style="font-family:var(--font-mono);color:var(--text-muted)">{{ e.logger }}</td>
+            <td style="font-family:var(--font-mono);white-space:pre-wrap;overflow-wrap:anywhere">{{ e.msg }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+</div>
+<div style="margin-top:10px;color:var(--text-muted);font-size:12px">Показано {{ entries|length }} записей · свежие сверху</div>

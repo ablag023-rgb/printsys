@@ -27,10 +27,13 @@ services:
       - "8001:8000"
     volumes:
       - .:/app
-      # Смонтировать реальные папки с документами:
+      # Смонтировать реальные папки с документами (админ-режим, read-only):
       - ../Документы:/data/demo:ro
+      # Writeable volume для папок, загруженных через UI:
+      - uploads:/data/uploads
     command: >
-      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/app --reload-include='*.py' --reload-include='*.html'"
 
 volumes:
   pgdata:
+  uploads:

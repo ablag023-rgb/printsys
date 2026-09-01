@@ -4,11 +4,30 @@
 function switchTab(name){
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
   document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.dataset.panel === name));
+  // Пере-запрос содержимого при переключении на «Логи» — свежая порция
+  if (name === 'logs' && window.htmx){
+    htmx.ajax('GET', '/logs', {target:'#logs-panel', swap:'innerHTML'});
+  }
 }
 document.addEventListener('click', e => {
   const t = e.target.closest('.tab');
   if (t) switchTab(t.dataset.tab);
 });
+
+// ============== LOGS AUTOREFRESH ==============
+let logsAutorefreshTimer = null;
+function toggleLogsAutorefresh(cb){
+  if (logsAutorefreshTimer) { clearInterval(logsAutorefreshTimer); logsAutorefreshTimer = null; }
+  if (cb.checked){
+    logsAutorefreshTimer = setInterval(() => {
+      if (document.querySelector('.panel[data-panel="logs"]').classList.contains('active')){
+        const form = document.querySelector('#logs-panel .filterbar form');
+        const params = form ? new URLSearchParams(new FormData(form)) : new URLSearchParams();
+        htmx.ajax('GET', '/logs?' + params.toString(), {target:'#logs-panel', swap:'innerHTML'});
+      }
+    }, 5000);
+  }
+}
 
 // ============== SELECTION ==============
 const selected = new Set();
@@ -92,18 +111,97 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDrawer(
 async function printSelected(){
   if (selected.size === 0) return;
   const ksrs = [...selected];
-  const total = ksrs.length;
-  if (!confirm(`Открыть ${total} PDF-дел для печати?\nБраузер поочерёдно откроет вкладки — для каждой нажмите Ctrl+P.`)) return;
-  for (const ksr of ksrs){
-    const w = window.open(`/cases/${ksr}/pdf`, `print-${ksr}`);
-    if (!w){
-      alert('Браузер заблокировал попап. Разрешите всплывающие окна.');
-      break;
-    }
-    // Небольшая пауза между вкладками
-    await new Promise(r => setTimeout(r, 700));
+  // Один PDF на весь пакет → одна вкладка → один диалог печати.
+  const url = `/cases/batch/pdf?ksrs=${encodeURIComponent(ksrs.join(','))}`;
+  const w = window.open(url, '_blank');
+  if (!w){
+    alert('Браузер заблокировал попап. Разрешите всплывающие окна.');
+    return;
   }
-  setTimeout(() => htmx.trigger('body','cases-changed'), 1500);
+  setTimeout(() => htmx.trigger('body','cases-changed'), 2000);
+}
+
+// ============== UPLOAD FOLDER ==============
+async function uploadFolder(ev){
+  ev.preventDefault();
+  const name = document.getElementById('upload-name').value.trim();
+  const fileInput = document.getElementById('upload-files');
+  const files = [...(fileInput.files || [])];
+  if (!name || files.length === 0){ return false; }
+
+  const fd = new FormData();
+  fd.append('name', name);
+  for (const f of files){
+    fd.append('files', f, f.name);
+    fd.append('paths', f.webkitRelativePath || f.name);
+  }
+
+  const prog = document.getElementById('upload-progress');
+  const progText = document.getElementById('upload-progress-text');
+  const progFill = document.getElementById('upload-progress-fill');
+  const submit = document.getElementById('upload-submit');
+  prog.style.display = 'block';
+  progText.textContent = `Загрузка ${files.length} файлов...`;
+  progFill.style.width = '0%';
+  submit.disabled = true;
+
+  await new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/sources/upload');
+    xhr.timeout = 10 * 60 * 1000;   // 10 минут на большие пачки
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable){
+        const p = Math.round(e.loaded / e.total * 100);
+        progFill.style.width = p + '%';
+        progText.textContent = `Загрузка: ${p}% (${(e.loaded/1e6).toFixed(1)} / ${(e.total/1e6).toFixed(1)} МБ)`;
+      }
+    };
+    xhr.upload.onload = () => {
+      progText.textContent = `Загружено, сервер разбирает архив...`;
+    };
+    xhr.onload = async () => {
+      if (xhr.status >= 200 && xhr.status < 300){
+        let res;
+        try { res = JSON.parse(xhr.responseText); }
+        catch(e){ progText.textContent = '❌ Ответ сервера не JSON: ' + xhr.responseText.slice(0,200); submit.disabled = false; reject(); return; }
+        progText.textContent = `Загружено ${res.files} файлов. Сканирую...`;
+        try {
+          await fetch(`/sources/${res.id}/scan`, {method:'POST'});
+        } catch(e){}
+        progText.textContent = `✓ Готово: источник «${res.name}»`;
+        submit.disabled = false;
+        setTimeout(() => {
+          prog.style.display = 'none';
+          htmx.ajax('GET', '/sources', {target:'#sources-panel', swap:'innerHTML'});
+          htmx.trigger('body', 'cases-changed');
+        }, 1200);
+        resolve();
+      } else {
+        const body = (xhr.responseText || '').slice(0, 400);
+        progText.textContent = `❌ HTTP ${xhr.status} ${xhr.statusText}: ${body}`;
+        submit.disabled = false;
+        reject();
+      }
+    };
+    xhr.onerror = () => {
+      progText.textContent = '❌ Ошибка сети (подробнее — во вкладке «Логи»). Возможные причины: сервер перезапустился, недоступен, отклонил размер.';
+      submit.disabled = false;
+      reject();
+    };
+    xhr.ontimeout = () => {
+      progText.textContent = '❌ Таймаут (10 мин). Загрузка слишком большая — разбейте на подпапки.';
+      submit.disabled = false;
+      reject();
+    };
+    xhr.onabort = () => {
+      progText.textContent = '❌ Загрузка отменена';
+      submit.disabled = false;
+      reject();
+    };
+    xhr.send(fd);
+  }).catch(() => {});
+
+  return false;
 }
 
 // ============== SLOTS EDITOR ==============

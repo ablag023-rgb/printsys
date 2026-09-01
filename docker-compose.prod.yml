@@ -26,11 +26,14 @@ services:
     ports:
       - "${WEB_PORT:-8000}:8000"
     volumes:
-      # Смонтируйте нужные папки в /data внутри контейнера. Пример:
+      # Смонтируйте нужные папки в /data внутри контейнера (админ-режим, read-only). Пример:
       # - /mnt/network/ksr:/data/network:ro
       - ${HOST_DATA_DIR:-./mount}:/data:ro
+      # Writeable volume для папок, загруженных через UI:
+      - uploads:/data/uploads
     command: >
       sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2"
 
 volumes:
   pgdata:
+  uploads:

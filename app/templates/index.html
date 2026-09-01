@@ -25,6 +25,7 @@
       <button class="tab active" data-tab="cases">Дела</button>
       <button class="tab" data-tab="sources">Источники</button>
       <button class="tab" data-tab="settings">Настройки</button>
+      <button class="tab" data-tab="logs">Логи</button>
     </div>
     <div class="header-actions">
       <a href="/settings/export" class="btn ghost">⬇ Экспорт</a>
@@ -63,6 +64,14 @@
   <div id="settings-panel"
        hx-get="/settings"
        hx-trigger="load, settings-saved from:body"
+       hx-swap="innerHTML"></div>
+</div>
+
+<!-- LOGS -->
+<div class="panel" data-panel="logs">
+  <div id="logs-panel"
+       hx-get="/logs"
+       hx-trigger="revealed"
        hx-swap="innerHTML"></div>
 </div>
 
