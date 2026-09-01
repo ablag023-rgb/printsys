@@ -1,0 +1,74 @@
+<div class="drawer-scrim show" onclick="closeDrawer()"></div>
+<div class="drawer show">
+  <div class="drawer-head">
+    <div>
+      <div style="font-size:11px;color:var(--text-soft);text-transform:uppercase;letter-spacing:.08em;font-weight:600">КСР</div>
+      <div class="ksr-big">{{ c.ksr }}</div>
+    </div>
+    {% if is_complete and has_dup %}<span class="dot warn" style="margin-left:12px">Есть дубликаты</span>
+    {% elif is_complete %}<span class="dot ok" style="margin-left:12px">Готово к печати</span>
+    {% else %}<span class="dot err" style="margin-left:12px">Нет: {{ missing|join(', ') }}</span>
+    {% endif %}
+    <button class="drawer-close" onclick="closeDrawer()">✕</button>
+  </div>
+  <div class="drawer-body">
+    <dl class="meta-grid">
+      <dt>Лицевой счёт</dt><dd style="font-family:var(--font-mono)">{{ c.account or '—' }}</dd>
+      <dt>За период</dt><dd>{{ c.period or '—' }}</dd>
+      <dt>Поставщик</dt><dd>{{ c.provider or '—' }}</dd>
+      <dt>Услуга</dt><dd>{{ c.service or '—' }}</dd>
+      <dt>Дата справки</dt><dd>{{ c.date_formed or '—' }}</dd>
+      <dt>Напечатано</dt><dd>{{ c.printed_at|fmt_date or '—' }}</dd>
+      <dt>В суде</dt><dd>{{ c.submitted_at|fmt_date or '—' }}</dd>
+    </dl>
+
+    {% set filled = slots_cfg|selectattr('id','in',c.slots|list)|list %}
+    <div class="section-title">Состав дела <span class="badge">{{ (c.slots|list|length) }}/{{ slots_cfg|length }}</span></div>
+    {% for s in slots_cfg %}
+      {% set files = c.slots.get(s.id, []) %}
+      {% if files %}
+        <div class="slot {% if files|length > 1 %}dup{% endif %}">
+          <span class="slot-num">{{ '%02d'|format(loop.index) }}</span>
+          <div class="slot-body">
+            <div class="slot-name">{{ s.name }}{% if files|length > 1 %}<span class="dup-warn">{{ files|length }} файла</span>{% endif %}</div>
+            {% for f in files %}
+              <div class="slot-file" title="{{ f.path }}">{{ f.name }}</div>
+            {% endfor %}
+          </div>
+        </div>
+      {% else %}
+        <div class="slot {% if s.required %}missing{% endif %}">
+          <span class="slot-num">{{ '%02d'|format(loop.index) }}</span>
+          <div class="slot-body">
+            <div class="slot-name">{{ s.name }}</div>
+            {% if s.required %}<div class="slot-missing-txt">Файл отсутствует</div>
+            {% else %}<div class="slot-file">(пусто)</div>{% endif %}
+          </div>
+        </div>
+      {% endif %}
+    {% endfor %}
+
+    <div class="section-title">История</div>
+    {% if c.history %}
+      {% for h in c.history|reverse %}
+        <div class="audit-item"><span>Напечатано</span><span>{{ h.printed_at|fmt_date }}</span></div>
+      {% endfor %}
+    {% else %}
+      <div class="audit-item"><span>Пока не печаталось</span><span></span></div>
+    {% endif %}
+  </div>
+  <div class="drawer-foot">
+    <button class="btn danger"
+            hx-delete="/cases/{{ c.ksr }}"
+            hx-confirm="Удалить дело КСР {{ c.ksr }}? Файлы в папке не тронутся."
+            hx-swap="none"
+            hx-on::after-request="closeDrawer()">🗑 Удалить дело</button>
+    <button class="btn" style="margin-left:auto"
+            hx-post="/cases/{{ c.ksr }}/submit-toggle" hx-swap="none"
+            hx-on::after-request="closeDrawer()">
+      {% if c.submitted_at %}↺ Снять «передано»{% else %}📅 Отметить переданным{% endif %}
+    </button>
+    <a class="btn primary" href="/cases/{{ c.ksr }}/pdf" target="_blank"
+       onclick="setTimeout(()=>htmx.trigger('body','cases-changed'),1200)">🖨 Печать</a>
+  </div>
+</div>

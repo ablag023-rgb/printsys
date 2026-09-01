@@ -1,0 +1,101 @@
+<div class="settings-section">
+  <h3>Слоты документов</h3>
+  <div class="desc">Порядок = очерёдность листов в PDF дела. Перетаскивайте <span class="drag-handle" style="cursor:default">≡</span>. Маска — подстрока (case-insensitive) или <code class="mono">/regex/</code>.</div>
+  <form id="slots-form" hx-post="/settings/slots" hx-trigger="submit" hx-swap="none">
+    <div id="slots-editor">
+      {% for s in stg.slots %}
+        <div class="slot-editor" data-id="{{ s.id }}">
+          <span class="drag-handle">≡</span>
+          <span class="slot-num">{{ '%02d'|format(loop.index) }}</span>
+          <input class="input name-input" value="{{ s.name }}" data-field="name">
+          <input class="input mask-input" value="{{ s.mask }}" data-field="mask" {% if s.is_catch_all %}disabled title="Служебный слот"{% endif %}>
+          <label class="switch"><input type="checkbox" data-field="required" {% if s.required %}checked{% endif %} {% if s.is_catch_all %}disabled{% endif %}><span class="slider"></span></label>
+          <span style="font-size:12px;color:var(--text-muted);width:90px">{% if s.is_catch_all %}Служебный{% elif s.required %}Обязательный{% else %}Опционально{% endif %}</span>
+          <button type="button" class="icon-btn sm" title="Удалить" {% if s.is_catch_all %}disabled{% endif %} onclick="removeSlot(this)">🗑</button>
+        </div>
+      {% endfor %}
+    </div>
+    <input type="hidden" name="slots_json" id="slots-json">
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button type="button" class="btn" onclick="addSlot()">+ Добавить слот</button>
+      <button type="submit" class="btn primary" style="margin-left:auto">Сохранить</button>
+    </div>
+  </form>
+</div>
+
+<div class="settings-section">
+  <h3>Подвал каждой страницы</h3>
+  <div class="desc">Формат: <code class="mono">КСР/номер листа</code>. Пример: <code class="mono">3455606/07</code>. Наносится поверх страниц готового PDF.</div>
+  <form hx-post="/settings/footer" hx-trigger="change" hx-swap="none">
+    <div class="setting-row">
+      <div class="label">Добавлять подвал</div>
+      <label class="switch"><input type="checkbox" name="enabled" {% if stg.footer.enabled %}checked{% endif %}><span class="slider"></span></label>
+    </div>
+    <div class="setting-row">
+      <div class="label">Размер шрифта</div>
+      <select class="select" name="size" style="width:120px">
+        {% for sz in [7,8,9,10,11] %}<option value="{{ sz }}" {% if stg.footer.size==sz %}selected{% endif %}>{{ sz }} pt</option>{% endfor %}
+      </select>
+    </div>
+    <div class="setting-row">
+      <div class="label">Цвет</div>
+      <input type="color" name="color" value="{{ stg.footer.color }}" style="width:60px;height:30px;border:1px solid var(--border);border-radius:6px">
+    </div>
+  </form>
+</div>
+
+<div class="settings-section">
+  <h3>Титульный лист дела</h3>
+  <div class="desc">Первая страница PDF: КСР, ЛС, период, поставщик, услуга + опись вложений.</div>
+  <form hx-post="/settings/title-page" hx-trigger="change" hx-swap="none">
+    <div class="setting-row">
+      <div class="label">Добавлять титульный лист</div>
+      <label class="switch"><input type="checkbox" name="enabled" {% if stg.title_page %}checked{% endif %}><span class="slider"></span></label>
+    </div>
+  </form>
+</div>
+
+<div class="settings-section">
+  <h3>Парсинг Справки</h3>
+  <div class="desc">Лейблы в xlsx-справке. Синонимы через запятую. Значение = соседняя справа ячейка.</div>
+  <form hx-post="/settings/labels" hx-trigger="change" hx-swap="none">
+    {% for key, label in [('date_formed','Дата формирования'),('account','Лицевой счёт'),('period','За период'),('provider','Поставщик'),('service','Услуга')] %}
+      <div class="setting-row">
+        <div class="label" style="min-width:160px">{{ label }}</div>
+        <input class="input" name="label_{{ key }}" value="{{ stg.labels[key]|join(', ') }}" style="flex:1">
+      </div>
+    {% endfor %}
+  </form>
+</div>
+
+<div class="settings-section">
+  <h3>Резервное копирование и очистка</h3>
+  <div class="desc">Настройки, реестр дел и статусы хранятся в PostgreSQL. Периодически выгружайте JSON для бэкапа.</div>
+  <div style="display:flex;gap:10px;margin-bottom:16px">
+    <a href="/settings/export" class="btn">⬇ Экспорт JSON</a>
+    <form hx-post="/settings/import" hx-encoding="multipart/form-data" hx-swap="none" style="display:inline">
+      <label class="btn" style="cursor:pointer;margin:0">
+        ⬆ Импорт JSON
+        <input type="file" name="file" accept=".json" style="display:none" onchange="this.form.dispatchEvent(new Event('submit',{cancelable:true,bubbles:true}))">
+      </label>
+    </form>
+  </div>
+  <div class="setting-row">
+    <div>
+      <div class="label">Очистить реестр дел</div>
+      <div class="hint">Удалит все дела, метаданные, даты печати и передачи. Настройки, слоты, лейблы и папки сохранятся.</div>
+    </div>
+    <button class="btn danger"
+            hx-post="/settings/clear-cases" hx-swap="none"
+            hx-confirm="Удалить все дела? Настройки и папки сохранятся.">Очистить дела</button>
+  </div>
+  <div class="setting-row">
+    <div>
+      <div class="label">Очистить всё</div>
+      <div class="hint">Полный сброс: настройки, слоты, лейблы, папки и реестр. Вернётся к дефолтам.</div>
+    </div>
+    <button class="btn danger"
+            hx-post="/settings/clear-all" hx-swap="none"
+            hx-confirm="Полный сброс. Всё удалить?">Очистить всё</button>
+  </div>
+</div>

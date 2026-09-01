@@ -1,0 +1,36 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: printsys
+      POSTGRES_PASSWORD: ${PG_PASSWORD:?PG_PASSWORD not set}
+      POSTGRES_DB: printsys
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U printsys"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  web:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PG_DSN: postgresql+asyncpg://printsys:${PG_PASSWORD:?PG_PASSWORD not set}@db:5432/printsys
+      DATA_ROOTS: ${DATA_ROOTS:-/data}
+    ports:
+      - "${WEB_PORT:-8000}:8000"
+    volumes:
+      # Смонтируйте нужные папки в /data внутри контейнера. Пример:
+      # - /mnt/network/ksr:/data/network:ro
+      - ${HOST_DATA_DIR:-./mount}:/data:ro
+    command: >
+      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2"
+
+volumes:
+  pgdata:

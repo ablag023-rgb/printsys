@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Система печати судебных дел</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/static/style.css">
+<script src="https://unpkg.com/htmx.org@1.9.12" integrity="sha384-ujb1lZYygJmzgSwoxRggbCHcjc0rB2XoQrxeTUQyRjrOnlCoYta87iKBWq3EsdM2" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-inner">
+    <div class="brand">
+      <div class="brand-mark">СП</div>
+      <div>
+        <div class="brand-title">Система печати судебных дел</div>
+        <div class="brand-sub">v0.2 · server-side</div>
+      </div>
+    </div>
+    <div class="tabs" role="tablist">
+      <button class="tab active" data-tab="cases">Дела</button>
+      <button class="tab" data-tab="sources">Источники</button>
+      <button class="tab" data-tab="settings">Настройки</button>
+    </div>
+    <div class="header-actions">
+      <a href="/settings/export" class="btn ghost">⬇ Экспорт</a>
+      <button class="btn primary"
+              hx-post="/sources/scan-all"
+              hx-target="#sources-panel"
+              hx-swap="innerHTML"
+              hx-indicator="#scan-indicator"
+              onclick="switchTab('sources')">
+        <span id="scan-indicator" class="htmx-indicator">⏳</span> ↻ Сканировать
+      </button>
+    </div>
+  </div>
+</div>
+
+<div class="wrap">
+
+<!-- CASES -->
+<div class="panel active" data-panel="cases">
+  <div id="cases-panel"
+       hx-get="/cases"
+       hx-trigger="load, cases-changed from:body, settings-saved from:body"
+       hx-swap="innerHTML"></div>
+</div>
+
+<!-- SOURCES -->
+<div class="panel" data-panel="sources">
+  <div id="sources-panel"
+       hx-get="/sources"
+       hx-trigger="load, sources-changed from:body"
+       hx-swap="innerHTML"></div>
+</div>
+
+<!-- SETTINGS -->
+<div class="panel" data-panel="settings">
+  <div id="settings-panel"
+       hx-get="/settings"
+       hx-trigger="load, settings-saved from:body"
+       hx-swap="innerHTML"></div>
+</div>
+
+</div>
+
+<!-- FLOATING BULK BAR -->
+<form id="bulkbar-form" class="bulkbar" method="post" hx-post="/cases/bulk" hx-target="#cases-panel" hx-swap="none">
+  <span class="bulkbar-count"><span id="bulkbar-n">0</span> выбрано</span>
+  <span class="bulkbar-sep"></span>
+  <button type="submit" class="bulkbar-btn" onclick="setBulkAction('mark-submitted')">✓ Отметить переданными</button>
+  <button type="submit" class="bulkbar-btn" onclick="setBulkAction('clear-statuses')">↺ Снять статусы</button>
+  <button type="submit" class="bulkbar-btn danger" onclick="return confirmBulk('delete','Удалить выбранные?')">🗑 Удалить</button>
+  <button type="button" class="bulkbar-btn primary" onclick="printSelected()">🖨 Печать выбранных</button>
+  <button type="button" class="bulkbar-close" onclick="clearSelection()">✕</button>
+  <input type="hidden" name="action" id="bulk-action" value="">
+</form>
+
+<!-- DRAWER slot -->
+<div id="drawer-slot"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

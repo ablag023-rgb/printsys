@@ -1,0 +1,69 @@
+{% if diff is defined %}
+<div class="diff-panel">
+  <div style="width:36px;height:36px;border-radius:8px;background:#fff;display:grid;place-items:center;color:var(--info);font-size:18px">✓</div>
+  <div style="flex:1">
+    <div style="font-weight:600;font-size:13px;color:var(--info)">Скан завершён: {{ diff_src }}</div>
+    <div style="color:var(--text-muted);font-size:12px;margin-top:2px">Файлов обработано: {{ diff.files }}</div>
+  </div>
+  <div class="diff-item"><b>+{{ diff.new }}</b> новых дел</div>
+  <div class="diff-item"><b>{{ diff.updated }}</b> обновились</div>
+</div>
+{% endif %}
+
+{% if sources|length == 0 %}
+  <div class="empty">
+    <h3>Источники не добавлены</h3>
+    <p>Добавьте папку — она должна находиться внутри одного из корней монтирования контейнера:</p>
+    <p style="font-family:var(--font-mono);font-size:12px">
+      {% for r in roots %}<code class="mono">{{ r }}</code>{% if not loop.last %} · {% endif %}{% endfor %}
+    </p>
+  </div>
+{% endif %}
+
+{% for s in sources %}
+<div class="source-item">
+  <div class="source-icon">📁</div>
+  <div class="source-body">
+    <div class="source-name">{{ s.name }}</div>
+    <div class="source-path">{{ s.path }}</div>
+    <div class="source-meta">
+      <span>{{ s.file_count or 0 }} файлов</span>
+      <span>{% if s.last_scan %}Последний скан: {{ s.last_scan|fmt_date }}{% else %}Ещё не сканировалась{% endif %}</span>
+    </div>
+  </div>
+  <div class="source-actions">
+    <button class="btn"
+            hx-post="/sources/{{ s.id }}/scan"
+            hx-target="#sources-panel"
+            hx-swap="innerHTML"
+            hx-indicator="#si-{{ s.id }}">
+      <span id="si-{{ s.id }}" class="htmx-indicator">⏳</span> ↻ Пересканировать
+    </button>
+    <button class="icon-btn" title="Удалить"
+            hx-delete="/sources/{{ s.id }}"
+            hx-target="#sources-panel"
+            hx-swap="innerHTML"
+            hx-confirm="Удалить источник?">🗑</button>
+  </div>
+</div>
+{% endfor %}
+
+<div style="margin-top:20px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px;box-shadow:var(--shadow)">
+  <h3 style="margin:0 0 10px;font-size:14px;font-weight:600">Добавить папку</h3>
+  <form hx-post="/sources/add" hx-target="#sources-panel" hx-swap="innerHTML"
+        style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
+    <div class="field" style="flex:1 1 200px">
+      <label>Название</label>
+      <input class="input" name="name" placeholder="Например: ТЭ Q3 2026" required>
+    </div>
+    <div class="field" style="flex:2 1 300px">
+      <label>Путь внутри контейнера</label>
+      <input class="input" name="path" placeholder="/data/demo" required>
+    </div>
+    <button class="btn primary" type="submit">Добавить</button>
+  </form>
+  <div style="margin-top:10px;color:var(--text-muted);font-size:12px">
+    Разрешённые корни: {% for r in roots %}<code class="mono">{{ r }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
+    Настройте bind-mount в <code class="mono">docker-compose.yml</code>.
+  </div>
+</div>

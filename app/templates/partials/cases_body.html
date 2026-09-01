@@ -1,0 +1,125 @@
+<div class="kpis">
+  <div class="kpi accent"><div class="kpi-label">Всего дел</div><div class="kpi-val">{{ kpi.total }}</div><div class="kpi-sub">в реестре</div></div>
+  <div class="kpi ok"><div class="kpi-label">Готовы к печати</div><div class="kpi-val">{{ kpi.ready }}</div><div class="kpi-sub">комплектные</div></div>
+  <div class="kpi warn"><div class="kpi-label">Неполные</div><div class="kpi-val">{{ kpi.incomplete }}</div><div class="kpi-sub">требуют файлов</div></div>
+  <div class="kpi"><div class="kpi-label">Напечатано</div><div class="kpi-val">{{ kpi.printed }}</div><div class="kpi-sub">ожидают передачи</div></div>
+  <div class="kpi"><div class="kpi-label">Передано в суд</div><div class="kpi-val">{{ kpi.court }}</div><div class="kpi-sub">архив</div></div>
+</div>
+
+<form class="filterbar" hx-get="/cases" hx-target="#cases-panel" hx-swap="innerHTML" hx-trigger="change, keyup delay:400ms from:input[name=q]">
+  <div class="field search">
+    <label>Поиск</label>
+    <input type="text" name="q" class="input search" value="{{ filters.q }}" placeholder="КСР или Лицевой счёт">
+  </div>
+  <div class="field"><label>Комплектность</label>
+    <select name="complete" class="select">
+      <option value="">Все</option>
+      <option value="complete" {% if filters.complete=='complete' %}selected{% endif %}>Полные</option>
+      <option value="incomplete" {% if filters.complete=='incomplete' %}selected{% endif %}>Неполные</option>
+    </select>
+  </div>
+  <div class="field"><label>Печать</label>
+    <select name="printed" class="select">
+      <option value="">Все</option>
+      <option value="yes" {% if filters.printed=='yes' %}selected{% endif %}>Напечатаны</option>
+      <option value="no" {% if filters.printed=='no' %}selected{% endif %}>Не напечатаны</option>
+    </select>
+  </div>
+  <div class="field"><label>Передача в суд</label>
+    <select name="court" class="select">
+      <option value="">Все</option>
+      <option value="yes" {% if filters.court=='yes' %}selected{% endif %}>Переданы</option>
+      <option value="no" {% if filters.court=='no' %}selected{% endif %}>Не переданы</option>
+    </select>
+  </div>
+  <div class="field"><label>Услуга</label>
+    <select name="service" class="select">
+      <option value="">Все</option>
+      {% for s in services %}<option value="{{ s }}" {% if filters.service==s %}selected{% endif %}>{{ s }}</option>{% endfor %}
+    </select>
+  </div>
+  <div class="field"><label>Поставщик</label>
+    <select name="provider" class="select">
+      <option value="">Все</option>
+      {% for p in providers %}<option value="{{ p }}" {% if filters.provider==p %}selected{% endif %}>{{ p }}</option>{% endfor %}
+    </select>
+  </div>
+  <button type="button" class="filter-reset" onclick="resetFilters(event)">Сбросить</button>
+</form>
+
+<div class="card">
+  <div class="tbl-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th style="width:36px"><input type="checkbox" class="cb" id="cb-all" onchange="toggleAll(this)"></th>
+          <th class="sortable" onclick="sortBy('ksr')">КСР {% if sort_key=='ksr' %}{{ '↑' if sort_dir>0 else '↓' }}{% else %}↕{% endif %}</th>
+          <th>Лицевой счёт</th>
+          <th>За период</th>
+          <th>Услуга</th>
+          <th>Поставщик</th>
+          <th>Комплектность</th>
+          <th class="sortable" onclick="sortBy('printed_at')">Напечатано {% if sort_key=='printed_at' %}{{ '↑' if sort_dir>0 else '↓' }}{% else %}↕{% endif %}</th>
+          <th class="sortable" onclick="sortBy('submitted_at')">В суде {% if sort_key=='submitted_at' %}{{ '↑' if sort_dir>0 else '↓' }}{% else %}↕{% endif %}</th>
+          <th style="text-align:right">Действия</th>
+        </tr>
+      </thead>
+      <tbody id="rows">
+      {% for c in cases %}
+        {% set is_c = helpers.is_complete(c) %}
+        {% set miss = helpers.missing(c) %}
+        {% set dup = helpers.has_dup(c) %}
+        <tr class="case-row"
+            data-ksr="{{ c.ksr }}"
+            hx-get="/cases/{{ c.ksr }}"
+            hx-target="#drawer-slot"
+            hx-swap="innerHTML"
+            onclick="if(event.target.tagName!=='INPUT' && !event.target.closest('.row-actions')) this.dispatchEvent(new Event('htmx:trigger'));">
+          <td><input type="checkbox" class="cb row-cb" data-ksr="{{ c.ksr }}" onclick="event.stopPropagation();toggleRow(this)"></td>
+          <td><span class="ksr">{{ c.ksr }}</span></td>
+          <td><span class="ls">{{ c.account or '—' }}</span></td>
+          <td><span class="period">{{ c.period or '—' }}</span></td>
+          <td><span class="svc-badge">{{ c.service or '—' }}</span></td>
+          <td class="cell-provider" title="{{ c.provider }}">{{ c.provider or '—' }}</td>
+          <td>
+            {% if is_c and dup %}<span class="dot warn">Дубликаты</span>
+            {% elif is_c %}<span class="dot ok">Полное</span>
+            {% elif miss|length == slots_cfg|selectattr('required')|list|length %}<span class="dot err">Нет файлов</span>
+            {% else %}<span class="dot warn" title="{{ miss|join(', ') }}">Нет: {{ miss|join(', ') }}</span>
+            {% endif %}
+          </td>
+          <td>{% if c.printed_at %}<span class="date set">{{ c.printed_at|fmt_date }}</span>{% else %}<span class="date">—</span>{% endif %}</td>
+          <td>{% if c.submitted_at %}<span class="date set">{{ c.submitted_at|fmt_date }}</span>{% else %}<span class="date">—</span>{% endif %}</td>
+          <td>
+            <div class="row-actions">
+              <a class="icon-btn sm" title="Печать" href="/cases/{{ c.ksr }}/pdf" target="_blank"
+                 onclick="event.stopPropagation();setTimeout(()=>htmx.trigger('body','cases-changed'),1200)">🖨</a>
+              <button class="icon-btn sm" title="Отметить переданным" onclick="event.stopPropagation()"
+                 hx-post="/cases/{{ c.ksr }}/submit-toggle" hx-swap="none">✓</button>
+              <button class="icon-btn sm" title="Удалить"
+                 hx-delete="/cases/{{ c.ksr }}"
+                 hx-confirm="Удалить дело КСР {{ c.ksr }}? Файлы в папке не тронутся."
+                 hx-swap="none"
+                 onclick="event.stopPropagation()">🗑</button>
+            </div>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if total == 0 %}
+  <div class="empty">
+    <h3>Дел пока нет</h3>
+    <p>Добавьте папку с документами на вкладке «Источники» и запустите сканирование.</p>
+    <button class="btn primary" onclick="switchTab('sources')">Перейти к источникам</button>
+  </div>
+  {% endif %}
+</div>
+
+<div style="display:flex;justify-content:space-between;align-items:center;margin-top:14px;color:var(--text-muted);font-size:12.5px">
+  <div>Показано {{ shown }} из {{ total }}</div>
+</div>
+
+<input type="hidden" id="current-sort-key" value="{{ sort_key }}">
+<input type="hidden" id="current-sort-dir" value="{{ sort_dir }}">
