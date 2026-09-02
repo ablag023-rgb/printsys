@@ -17,6 +17,9 @@ alembic==1.13.3
 python-calamine==0.5.3
 openpyxl==3.1.5
 
+# --- Шифрование паролей от сетевых шар ---
+cryptography==43.0.1
+
 # --- Периодический скан ---
 apscheduler==3.10.4
 

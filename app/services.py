@@ -275,7 +275,7 @@ async def _rebuild_cases(
 
 
 async def scan_all(session: AsyncSession, trigger: str = "manual") -> Dict[str, Any]:
-    """Отсканировать все включённые источники, вернуть сводную статистику."""
+    """Отсканировать настроенную папку. Источник в системе один (SPEC §3.1)."""
     total: Dict[str, Any] = {
         "sources": 0, "files_seen": 0, "files_new": 0, "files_changed": 0,
         "files_renamed": 0, "files_missing": 0, "files_locked": 0,

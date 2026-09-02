@@ -6,7 +6,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/style.css?v={{ static_v() }}">
 <script src="https://unpkg.com/htmx.org@1.9.12" integrity="sha384-ujb1lZYygJmzgSwoxRggbCHcjc0rB2XoQrxeTUQyRjrOnlCoYta87iKBWq3EsdM2" crossorigin="anonymous"></script>
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
 </head>
@@ -23,18 +23,18 @@
     </div>
     <div class="tabs" role="tablist">
       <button class="tab active" data-tab="cases">Дела</button>
-      <button class="tab" data-tab="sources">Источники</button>
       <button class="tab" data-tab="settings">Настройки</button>
       <button class="tab" data-tab="logs">Логи</button>
     </div>
     <div class="header-actions">
       <a href="/settings/export" class="btn ghost">⬇ Экспорт</a>
       <button class="btn primary"
-              hx-post="/sources/scan-all"
-              hx-target="#sources-panel"
+              hx-post="/folder/scan"
+              hx-target="#folder-panel"
               hx-swap="innerHTML"
               hx-indicator="#scan-indicator"
-              onclick="switchTab('sources')">
+              hx-on::after-request="htmx.trigger('body','cases-changed')"
+              onclick="switchTab('settings')">
         <span id="scan-indicator" class="htmx-indicator">⏳</span> ↻ Сканировать
       </button>
     </div>
@@ -51,16 +51,12 @@
        hx-swap="innerHTML"></div>
 </div>
 
-<!-- SOURCES -->
-<div class="panel" data-panel="sources">
-  <div id="sources-panel"
-       hx-get="/sources"
-       hx-trigger="load, sources-changed from:body"
-       hx-swap="innerHTML"></div>
-</div>
-
 <!-- SETTINGS -->
 <div class="panel" data-panel="settings">
+  <div id="folder-panel"
+       hx-get="/folder"
+       hx-trigger="load, folder-changed from:body"
+       hx-swap="innerHTML"></div>
   <div id="settings-panel"
        hx-get="/settings"
        hx-trigger="load, settings-saved from:body"
@@ -91,6 +87,6 @@
 <!-- DRAWER slot -->
 <div id="drawer-slot"></div>
 
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v={{ static_v() }}"></script>
 </body>
 </html>

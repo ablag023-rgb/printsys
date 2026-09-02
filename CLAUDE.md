@@ -13,7 +13,7 @@
 Ключевые решения v2.0 (детали и обоснования — в SPEC):
 1. **Сканирует сервер, печатает клиент.** База дел общая и папка общая → сканер должен быть один, иначе гонки манифестов, расхождения из-за прав NTFS и блокировок, база не обновляется когда все ушли домой
 2. **Файлы не ходят через сервер.** Сервер отдаёт клиенту `source_id + rel_path`, клиент резолвит `root_unc + rel_path` и читает с шары напрямую под учёткой оператора — аудит «кто работал с делом» сохраняется
-3. Личные папки оператора разрешены отдельным классом `Source.kind=personal` — их сканирует клиент (гонок нет: один владелец по построению)
+3. **Папка одна на систему**, задаётся администратором в «Настройках» (локальный путь или сетевая шара с логином/паролем). Оператор свои папки добавлять не может — реестр общий, источник должен быть один. Личные папки операторов отменены
 4. Триггеры скана: таймер 5–10 мин + кнопка «Сканировать сейчас» + опционально маркер-файл от биллинга
 5. **Скан, а не watcher** — по SMB `ReadDirectoryChangesW` теряет события при переполнении буфера 64 КБ, `SMB2 CHANGE_NOTIFY` one-shot с окном потери, `inotify` на CIFS не работает вообще
 6. **Кешировать парсинг, а не экономить на обходе.** Замерено: парсинг справки 1.5 мс против `stat` 31 мкс (47×). Обход 20 000 файлов — 5–15 с, не узкое место. Пруннинг по mtime каталога отвергнут: `os.scandir` отдаёт устаревший mtime (100 промахов из 100 в тесте), цена ошибки — дело тихо не появится в реестре
@@ -39,11 +39,15 @@
 
 - Python 3.12 + **FastAPI 0.115** + **Jinja2** + **HTMX 1.9** — SSR-веб без фронт-сборки
 - **PostgreSQL 16** + **SQLAlchemy 2.0 async** + **asyncpg** + **Alembic** — БД и миграции
-- **openpyxl** — парсинг xlsx-справок (извлечение метаданных)
-- **LibreOffice headless** (пакеты `libreoffice-core libreoffice-calc`) — конвертация xlsx→PDF с сохранением форматирования Excel
-- **pypdf 5** + **reportlab 4** — сборка PDF, кириллица через DejaVu Sans (пакет `fonts-dejavu-core`)
+- **python-calamine** (основной) + **openpyxl** (резервный) — парсинг xlsx-справок
+- **APScheduler** — периодический скан
+- **cryptography** — шифрование пароля от сетевой шары
+- **cifs-utils** — монтирование шары, заданной в настройках (нужен `CAP_SYS_ADMIN`)
 - **Docker Compose** — dev (`docker-compose.yml`) и prod (`docker-compose.prod.yml`)
 - **pytest + pytest-asyncio + httpx** — тесты
+
+Сборки PDF и печати на сервере **нет** — они на клиенте (Excel COM + win32print).
+Поэтому убраны LibreOffice, шрифты рендеринга, `reportlab`, `pypdf`; образ 372 МБ.
 
 ## 3. Раскладка
 
@@ -64,21 +68,24 @@ printsys/
 │   ├── db.py                  async engine + session_scope
 │   ├── models.py              ORM: AppSetting, Source, Case, PrintHistory
 │   ├── settings_store.py      доступ к настройкам + DEFAULTS
-│   ├── scanner.py             walk_dir, extract_ksr, parse_spravka, match_slot
-│   ├── services.py            оркестрация scan_source/scan_all
-│   ├── pdf.py                 title page + xlsx→pdf + copy pdfs + footer overlay
-│   ├── templates.py           Jinja2 init, fmt_date filter
-│   ├── logging_ring.py        in-memory ring buffer для вкладки «Логи»
+│   ├── scanner.py             scandir_recursive, extract_ksr, parse_spravka, composition_hash
+│   ├── services.py            инкрементальный скан, пересборка дел, дифф
+│   ├── scheduler.py           APScheduler: периодический скан + общий лок
+│   ├── share.py               проверка доступности шары, сборка UNC-путей
+│   ├── mounter.py             монтирование SMB, шифрование пароля
+│   ├── templates.py           Jinja2 init, fmt_date, версионирование статики
+│   ├── logging_ring.py        ring buffer для вкладки «Логи» + stdout
 │   ├── routes/
-│   │   ├── cases.py           HTMX: list, drawer, delete, bulk, PDF (single/file/batch)
-│   │   ├── sources.py         HTMX: list, add (bind-mount), upload (загрузка папки), delete, scan
-│   │   ├── logs.py            HTMX: вкладка «Логи» с фильтром по уровню
-│   │   └── settings_routes.py HTMX: slots, labels, footer, title, export/import
+│   │   ├── cases.py           HTMX: список, карточка, статусы, массовые действия
+│   │   ├── folder.py          HTMX: настройка ЕДИНСТВЕННОЙ папки (локальная/SMB), скан
+│   │   ├── api.py             JSON-API для Windows-клиента печати
+│   │   ├── logs.py            HTMX: вкладка «Логи»
+│   │   └── settings_routes.py HTMX: slots, labels, footer, export/import
 │   ├── templates/
-│   │   ├── index.html                header + tabs + panels
-│   │   └── partials/                 cases_body, case_drawer, sources_list, settings_body
+│   │   ├── index.html                header + вкладки Дела/Настройки/Логи
+│   │   └── partials/                 cases_body, case_drawer, folder_body, settings_body, logs_body
 │   └── static/                       style.css, app.js
-└── tests/                     pytest (11 юнит-тестов чистой логики)
+└── tests/                     pytest (29 юнит-тестов)
 ```
 
 ## 4. Модель данных
@@ -86,11 +93,13 @@ printsys/
 Все таблицы — public. Ключевые сущности:
 
 - **`app_settings`** (key/value/json) — настройки, правятся в UI. Ключи: `slots`, `labels`, `footer`, `title_page`. Дефолты в `settings_store.DEFAULTS`.
-- **`sources`** (id, name, path, added_at, last_scan, file_count) — папки-источники. `path` — путь **внутри контейнера**, обязан быть внутри одного из `DATA_ROOTS`.
+- **`sources`** — **ровно одна запись** (singleton): настроенная папка. `path` — путь внутри контейнера, `root_unc` — путь для клиента, `kind` (local|smb), реквизиты SMB с зашифрованным паролем, `mount_state`.
+- **`source_files`** — инкрементальный кеш сканера: `size`, `mtime_ns`, `file_key` (инвариант при переименовании), `parsed_meta`, `parser_version`, `last_seen_scan_id`, `state`.
+- **`scan_runs`** — журнал сканов: новые/изменённые/переименованные/пропавшие/заблокированные, сколько парсили, длительность.
 - **`cases`** (ksr PK, метаданные, `slots: JSON`, `printed_at`, `submitted_at`, `allow_incomplete`, `notes`) — дела по КСР. Ключ — нормализованный КСР (без ведущих нулей). `slots` = `{slot_id: [{name, path, source_id, source_name}, ...]}`.
 - **`print_history`** (id, ksr FK, printed_at, note) — аудит фактов печати.
 
-Схема заводится миграцией `migrations/versions/0001_initial.py`. При правках модели — генерировать новую миграцию:
+Схема: миграции `0001_initial`, `0002_scanner_cache`, `0003_smb_sources`. При правках модели — генерировать новую миграцию:
 ```bash
 docker compose exec web alembic revision --autogenerate -m "описание"
 docker compose exec web alembic upgrade head
@@ -155,8 +164,8 @@ docker compose exec db pg_dump -U printsys printsys > backup.sql
 
 ## 9. Известные ограничения v0.3
 
-1. **Пакетная печать 100+ дел** — сейчас синхронная сборка одного PDF. Для 100+ дел время растёт линейно (~2 сек на дело с LibreOffice), файл раздувается до 500+ МБ. Рекомендация исследования — реализовать async chunking через ARQ + SSE + Chrome `--kiosk-printing`. Отдельная веха.
-2. **Chrome `--kiosk-printing` для silent-print** пачек — не настроено, оператор должен нажимать Ctrl+P (или запустить браузер с этим флагом на своей машине).
+1. **Печати нет вообще** — серверная сборка PDF удалена, Windows-клиент ещё не написан (веха 2). Кнопки печати в UI убраны.
+2. **Модель состояний не реализована** — пока только `printed_at`/`submitted_at`, полный автомат из SPEC §5 (NEW → CLAIMED → … + STALE/ORPHANED) сделан частично: есть только флаги `is_stale`/`is_orphaned`.
 3. **Однопользовательский режим без аутентификации** — разворачивать только во внутренней сети.
 4. **Bind-mount как `ro` в prod** — контейнер не может изменить/удалить исходные документы. Загруженные через UI папки лежат в отдельном writeable volume `/data/uploads/`.
 5. **Метаданные из Справки** извлекаются по конфигу лейблов — если xlsx-шаблон нестандартный, дополни синонимы в UI «Настройки → Парсинг Справки».

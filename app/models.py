@@ -47,6 +47,18 @@ class Source(Base):
     root_unc: Mapped[str] = mapped_column(String(1024), default="")
     enabled: Mapped[bool] = mapped_column(default=True)
 
+    # local — путь уже виден контейнеру (bind-mount/volume, задан админом)
+    # smb   — шара, которую приложение монтирует само по данным из UI
+    kind: Mapped[str] = mapped_column(String(16), default="local", index=True)
+    smb_unc: Mapped[str] = mapped_column(String(1024), default="")
+    smb_username: Mapped[str] = mapped_column(String(255), default="")
+    smb_domain: Mapped[str] = mapped_column(String(255), default="")
+    smb_password_enc: Mapped[str] = mapped_column(Text, default="")   # Fernet, не хранится в открытом виде
+    smb_options: Mapped[str] = mapped_column(String(512), default="")  # доп. опции mount, если нужны
+    # unmounted | mounted | error
+    mount_state: Mapped[str] = mapped_column(String(24), default="unmounted")
+    mount_error: Mapped[str] = mapped_column(Text, default="")
+
 
 class SourceFile(Base):
     """Инкрементальный кеш сканера: что видели в прошлый раз и результат парсинга.

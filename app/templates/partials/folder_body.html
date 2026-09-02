@@ -1,0 +1,137 @@
+{% if message %}
+  <div class="banner" style="background:var(--ok-soft);border-color:rgba(5,150,105,.25);color:#065F46">✓ {{ message }}</div>
+{% endif %}
+{% if error %}
+  <div class="banner err">⚠ {{ error }}</div>
+{% endif %}
+
+<div class="settings-section">
+  <h3>Папка с документами</h3>
+  <div class="desc">
+    Папка одна на всю систему. Сервер сканирует её и ведёт общий реестр дел;
+    клиент читает те же файлы напрямую по UNC под учётной записью оператора.
+  </div>
+
+  {% if src and src.path %}
+    <div class="source-item" style="margin-bottom:16px">
+      <div class="source-icon">{% if health and not health.ok %}⚠{% else %}📁{% endif %}</div>
+      <div class="source-body">
+        <div class="source-name">
+          {% if src.kind == 'smb' %}Сетевая шара{% else %}Локальный путь{% endif %}
+          {% if health %}
+            {% if health.ok %}<span class="dot ok" style="margin-left:8px;font-weight:400">доступна</span>
+            {% else %}<span class="dot err" style="margin-left:8px;font-weight:400">
+              {% if health.state == 'stale' %}связь потеряна{% elif health.state == 'denied' %}нет прав{% else %}не найдена{% endif %}
+            </span>{% endif %}
+          {% endif %}
+        </div>
+        <div class="source-path">{% if src.kind == 'smb' %}{{ src.smb_unc }}{% else %}{{ src.path }}{% endif %}</div>
+        <div class="source-meta">
+          <span>{{ src.file_count or 0 }} файлов</span>
+          <span>{% if src.last_scan %}Последний скан: {{ src.last_scan|fmt_date }}{% else %}Ещё не сканировалась{% endif %}</span>
+          {% if src.root_unc %}
+            <span>UNC для клиента: <code class="mono">{{ src.root_unc }}</code></span>
+          {% else %}
+            <span class="dot warn">UNC не задан — клиент печатать не сможет</span>
+          {% endif %}
+          {% if health and not health.ok %}<span style="color:var(--err)">{{ health.message }}</span>{% endif %}
+        </div>
+      </div>
+      <div class="source-actions">
+        {% if src.kind == 'smb' %}
+          <button class="btn" hx-post="/folder/remount" hx-target="#folder-panel" hx-swap="innerHTML">↻ Переподключить</button>
+        {% endif %}
+        <button class="btn primary" hx-post="/folder/scan" hx-target="#folder-panel" hx-swap="innerHTML"
+                hx-indicator="#scan-ind">
+          <span id="scan-ind" class="htmx-indicator">⏳</span> Сканировать
+        </button>
+      </div>
+    </div>
+  {% else %}
+    <div class="banner">Папка ещё не настроена. Задайте её ниже.</div>
+  {% endif %}
+
+  <div class="tabs mode-switch" style="margin:0 0 16px;width:fit-content">
+    <button class="tab mode-btn {% if not src or src.kind != 'smb' %}active{% endif %}" type="button"
+            onclick="switchFolderMode('local')" id="fm-local">Локальный путь</button>
+    <button class="tab mode-btn {% if src and src.kind == 'smb' %}active{% endif %}" type="button"
+            onclick="switchFolderMode('smb')" id="fm-smb">Сетевая шара</button>
+  </div>
+
+  <!-- ЛОКАЛЬНЫЙ ПУТЬ -->
+  <form id="folder-form-local" hx-post="/folder/local" hx-target="#folder-panel" hx-swap="innerHTML"
+        style="{% if src and src.kind == 'smb' %}display:none{% endif %}">
+    <div class="desc" style="margin-bottom:12px">
+      Папка, уже подключённая к контейнеру администратором (bind-mount или volume).
+      Разрешённые корни: {% for r in roots %}<code class="mono">{{ r }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+    </div>
+    <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
+      <div class="field" style="flex:2 1 280px">
+        <label>Путь внутри контейнера</label>
+        <input class="input" name="path" required placeholder="/data/share"
+               value="{% if src and src.kind != 'smb' %}{{ src.path }}{% endif %}">
+      </div>
+      <div class="field" style="flex:2 1 280px">
+        <label>UNC-путь для клиента</label>
+        <input class="input" name="root_unc" placeholder="\\srv-docs\ksr"
+               style="font-family:var(--font-mono);font-size:12px"
+               value="{% if src and src.kind != 'smb' %}{{ src.root_unc }}{% endif %}">
+      </div>
+      <button class="btn primary" type="submit">Сохранить</button>
+    </div>
+  </form>
+
+  <!-- СЕТЕВАЯ ШАРА -->
+  <form id="folder-form-smb" hx-post="/folder/smb" hx-target="#folder-panel" hx-swap="innerHTML"
+        style="{% if not src or src.kind != 'smb' %}display:none{% endif %}">
+    {% if mount_cap and not mount_cap.ok %}
+      <div class="banner err" style="white-space:pre-line">{{ mount_cap.message }}</div>
+    {% else %}
+      <div class="desc" style="margin-bottom:12px">
+        Приложение само подключит шару. UNC-путь для клиента заполнится автоматически.
+      </div>
+    {% endif %}
+    <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
+      <div class="field" style="flex:2 1 320px">
+        <label>Сетевой путь</label>
+        <input class="input" name="smb_unc" required placeholder="\\srv-docs\ksr\2026"
+               style="font-family:var(--font-mono);font-size:12px"
+               value="{% if src %}{{ src.smb_unc }}{% endif %}"
+               {% if mount_cap and not mount_cap.ok %}disabled{% endif %}>
+      </div>
+      <div class="field" style="flex:1 1 150px">
+        <label>Пользователь</label>
+        <input class="input" name="smb_username" placeholder="svc_printsys"
+               value="{% if src %}{{ src.smb_username }}{% endif %}"
+               {% if mount_cap and not mount_cap.ok %}disabled{% endif %}>
+      </div>
+      <div class="field" style="flex:1 1 150px">
+        <label>Пароль</label>
+        <input class="input" name="smb_password" type="password"
+               placeholder="{% if src and src.smb_password_enc %}не менять{% else %}пароль{% endif %}"
+               {% if mount_cap and not mount_cap.ok %}disabled{% endif %}>
+      </div>
+      <div class="field" style="flex:1 1 120px">
+        <label>Домен</label>
+        <input class="input" name="smb_domain" placeholder="CORP"
+               value="{% if src %}{{ src.smb_domain }}{% endif %}"
+               {% if mount_cap and not mount_cap.ok %}disabled{% endif %}>
+      </div>
+      <button class="btn primary" type="submit"
+              {% if mount_cap and not mount_cap.ok %}disabled{% endif %}>Подключить</button>
+    </div>
+    <div class="desc" style="margin-top:10px">
+      Пароль хранится в базе в зашифрованном виде и не отдаётся ни в UI, ни в API.
+      Оставьте поле пустым, чтобы сохранить прежний.
+    </div>
+  </form>
+</div>
+
+<script>
+function switchFolderMode(mode){
+  document.getElementById('fm-local').classList.toggle('active', mode === 'local');
+  document.getElementById('fm-smb').classList.toggle('active', mode === 'smb');
+  document.getElementById('folder-form-local').style.display = mode === 'local' ? '' : 'none';
+  document.getElementById('folder-form-smb').style.display   = mode === 'smb'   ? '' : 'none';
+}
+</script>

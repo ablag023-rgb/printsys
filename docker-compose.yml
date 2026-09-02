@@ -23,6 +23,15 @@ services:
     environment:
       PG_DSN: postgresql+asyncpg://printsys:printsys@db:5432/printsys
       DATA_ROOTS: /data
+      SCAN_INTERVAL_MINUTES: "${SCAN_INTERVAL_MINUTES:-10}"
+      SECRET_KEY: "${SECRET_KEY:-printsys-dev-key-change-me}"
+    # Нужно, чтобы приложение могло само подключать сетевую шару,
+    # указанную в настройках. Без этого доступен только режим bind-mount.
+    cap_add:
+      - SYS_ADMIN
+      - DAC_READ_SEARCH
+    security_opt:
+      - apparmor:unconfined
     ports:
       - "8001:8000"
     volumes:
@@ -31,6 +40,8 @@ services:
       - ../Документы:/data/demo:ro
       # Writeable volume для папок, загруженных через UI:
       - uploads:/data/uploads
+      # Точки монтирования шар, подключённых из настроек:
+      - mounts:/data/mounts
       # Сетевая шара. Раскомментируйте и задайте переменные в .env — см. volumes ниже.
       # - ksr_share:/data/share:ro
     command: >
@@ -39,6 +50,7 @@ services:
 volumes:
   pgdata:
   uploads:
+  mounts:
 
   # Сетевая шара через CIFS-драйвер Docker: монтирование объявлено здесь,
   # привилегированный контейнер не нужен. Учётные данные — в .env (в git не попадает).
