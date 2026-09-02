@@ -63,11 +63,19 @@
         <RegistryKey Root="HKCU" Key="Software\printsys">
           <RegistryValue Name="InstallDir" Type="string" Value="[INSTALLFOLDER]" KeyPath="yes" />
         </RegistryKey>
+        <!-- Ярлык ведёт на launcher, а не на printsys.exe: консольная утилита
+             отрабатывает команду и завершается, окно закрывается быстрее, чем
+             оператор успевает его прочитать.
+
+             Иконку НЕ задаём через <Icon SourceFile="…printsys.exe">: WiX
+             встраивает в установщик весь указанный файл целиком, и MSI пухнет
+             с 43 до 57 МБ ради картинки. Понадобится иконка — нужен отдельный
+             маленький .ico. -->
         <Shortcut Id="StartMenuShortcut"
                   Directory="ProgramMenuFolder"
                   Name="Система печати судебных дел"
                   Description="Печать пакетов документов для подачи в суд"
-                  Target="[INSTALLFOLDER]printsys.exe"
+                  Target="[INSTALLFOLDER]Запустить.cmd"
                   WorkingDirectory="INSTALLFOLDER" />
         <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
       </Component>

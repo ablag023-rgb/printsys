@@ -16,13 +16,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "dist" / "printsys"
 
-LAUNCHER = """@echo off
-rem Открывает консоль в каталоге клиента.
-rem Дальше: printsys login, printsys cases, printsys print ...
-cd /d "%~dp0"
-set "PATH=%~dp0;%PATH%"
-cmd /k printsys --help
-"""
+sys.path.insert(0, str(Path(__file__).parent))
+from common import write_launcher  # noqa: E402
+
 
 
 def main() -> int:
@@ -44,7 +40,7 @@ def main() -> int:
         cfg.unlink()      # без --server раздача не должна тащить чужой адрес
         print("printsys.json убран: адрес сервера оператор задаст сам")
 
-    (DIST / "Запустить.cmd").write_text(LAUNCHER, encoding="cp866")
+    write_launcher(DIST)
 
     base = ROOT / "dist" / f"printsys-{args.version}-portable"
     zip_path = Path(shutil.make_archive(str(base), "zip", str(DIST.parent), DIST.name))

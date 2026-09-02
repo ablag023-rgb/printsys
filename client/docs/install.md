@@ -24,7 +24,7 @@ msiexec /i printsys-0.4.0-peruser.msi /qn SERVERURL=http://printsys.corp.local:8
 |---|---|
 | `printsys.exe` + зависимости | `%LOCALAPPDATA%\Programs\printsys\` |
 | `HKCU\Software\printsys\ServerUrl` | реестр пользователя |
-| ярлык | личное меню «Пуск» |
+| ярлык | личное меню «Пуск» (ведёт на `Запустить.cmd`) |
 | очередь и настройки | `%LOCALAPPDATA%\printsys\` |
 
 Решения в [`packaging/printsys.wxs`](../packaging/printsys.wxs):
@@ -40,6 +40,11 @@ msiexec /i printsys-0.4.0-peruser.msi /qn SERVERURL=http://printsys.corp.local:8
 - `Codepage="1251"` — без него линковщик не принимает кириллицу в названии
   продукта;
 - `MajorUpgrade` — обновление ставится поверх;
+- ярлык ведёт на `Запустить.cmd`, а не на `printsys.exe`: консольная утилита
+  отрабатывает команду и завершается, окно закрывается быстрее, чем оператор
+  успевает его прочитать;
+- иконка НЕ задаётся через `<Icon SourceFile="…printsys.exe">`: WiX встраивает
+  указанный файл в установщик целиком, и MSI пухнет с 43 до 57 МБ;
 - каталог данных установщик **не создаёт и при удалении не трогает**: там
   очередь печати, и снос клиента не должен уничтожать сведения о незавершённом
   пакете.

@@ -317,7 +317,9 @@ def cmd_health(args, cfg: Config) -> int:
 def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(prog="printsys", description="Клиент печати судебных дел")
     p.add_argument("-v", "--verbose", action="store_true")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    # required=False: запуск без аргументов (двойной клик по ярлыку)
+    # должен показать справку, а не отвечать ошибкой и кодом 2
+    sub = p.add_subparsers(dest="cmd")
 
     sp = sub.add_parser("login", help="вход на сервер")
     sp.add_argument("--login"); sp.add_argument("--password")
@@ -367,6 +369,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     sp.set_defaults(func=cmd_config)
 
     args = p.parse_args(argv)
+    if not getattr(args, "cmd", None):
+        p.print_help()
+        print("\nНачните с входа на сервер:  printsys login")
+        return 0
     _setup_logging(args.verbose)
     return args.func(args, Config.load())
 

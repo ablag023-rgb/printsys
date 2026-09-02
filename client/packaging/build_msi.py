@@ -20,6 +20,9 @@ DIST = ROOT / "dist" / "printsys"
 OUT = ROOT / "dist"
 OBJ = ROOT / "build" / "msi"
 
+sys.path.insert(0, str(Path(__file__).parent))
+from common import write_launcher  # noqa: E402
+
 
 def _echo(text: str | None) -> None:
     enc = sys.stdout.encoding or "utf-8"
@@ -52,6 +55,9 @@ def main() -> int:
                          "сначала: python -m PyInstaller --noconfirm --clean printsys.spec")
     if not (WIX / "candle.exe").exists():
         raise SystemExit(f"нет WiX: {WIX} (см. docs/install.md)")
+
+    # launcher должен лежать в dist ДО heat, иначе не попадёт в опись
+    write_launcher(DIST)
 
     OBJ.mkdir(parents=True, exist_ok=True)
     files_wxs = OBJ / "files.wxs"
