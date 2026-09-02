@@ -1,17 +1,22 @@
 """Сканирование папок, извлечение КСР, парсинг Справки, раскладка по слотам."""
 from __future__ import annotations
 
+import hashlib
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, Iterator, List, Optional
 
 from openpyxl import load_workbook
 
 XLSX_RE = re.compile(r"\.xlsx?$", re.IGNORECASE)
 LOCK_RE = re.compile(r"^~\$")
 SPRAVKA_MARK = re.compile(r"Справка о расчетах по ЖКУ", re.IGNORECASE)
+
+# Версия логики парсинга. Инкремент → кеш считается протухшим и справки перечитываются.
+PARSER_VERSION = 2
 
 
 @dataclass
@@ -20,6 +25,70 @@ class FoundFile:
     path: str          # абсолютный путь
     source_id: int
     source_name: str
+
+
+@dataclass
+class ScannedFile:
+    """Файл, увиденный при обходе, вместе с метаданными из одного вызова scandir."""
+    rel_path: str
+    name: str
+    abs_path: str
+    size: int
+    mtime_ns: int
+    file_key: str      # инвариант при переименовании: st_ino, иначе (size|name)
+
+
+def scandir_recursive(root: Path) -> Iterator[ScannedFile]:
+    """Рекурсивный обход через os.scandir — метаданные приходят пачками.
+
+    Отдаёт файлы; lock-файлы Excel (~$...) отсекаются. Каталоги, недоступные
+    по правам, пропускаются молча (вызывающий фиксирует это отдельно).
+    """
+    root_str = str(root)
+    stack = [root_str]
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as it:
+                for entry in it:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(entry.path)
+                            continue
+                        if not entry.is_file(follow_symlinks=False):
+                            continue
+                    except OSError:
+                        continue
+                    if LOCK_RE.match(entry.name):
+                        continue
+                    try:
+                        st = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    rel = os.path.relpath(entry.path, root_str).replace("\\", "/")
+                    ino = getattr(st, "st_ino", 0)
+                    key = str(ino) if ino else f"{st.st_size}|{entry.name}"
+                    yield ScannedFile(
+                        rel_path=rel,
+                        name=entry.name,
+                        abs_path=entry.path,
+                        size=st.st_size,
+                        mtime_ns=st.st_mtime_ns,
+                        file_key=key,
+                    )
+        except (PermissionError, OSError):
+            continue
+
+
+def composition_hash(entries: List[tuple]) -> str:
+    """Хэш состава дела: [(slot_id, rel_path, size, mtime_ns), ...].
+
+    Меняется — значит дело надо пересобрать (и, если оно уже печаталось, пометить STALE).
+    """
+    h = hashlib.blake2b(digest_size=16)
+    for slot_id, rel_path, size, mtime_ns in sorted(entries):
+        h.update(f"{slot_id}\x00{rel_path}\x00{size}\x00{mtime_ns}\x00".encode("utf-8"))
+    return h.hexdigest()
 
 
 def normalize_ksr(raw: str) -> str:

@@ -8,7 +8,6 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .. import pdf as pdfgen
 from .. import services, settings_store
 from ..db import get_session
 from ..models import Case, PrintHistory
@@ -171,96 +170,3 @@ async def bulk_action(
     else:
         raise HTTPException(400, "unknown action")
     return HTMLResponse("", headers={"HX-Trigger": "cases-changed"})
-
-
-@router.get("/batch/pdf")
-async def batch_pdf(ksrs: str = Query(..., description="csv список КСР"),
-                    session: AsyncSession = Depends(get_session)):
-    """Собрать все выбранные дела в один PDF — один запрос печати на весь пакет.
-
-    Дела идут подряд, разделяются титульными листами. Подвал `КСР/NN` нумеруется
-    в рамках каждого дела, чтобы блоки можно было идентифицировать в стопке.
-    """
-    ksr_list = [k.strip() for k in ksrs.split(",") if k.strip()]
-    if not ksr_list:
-        raise HTTPException(400, "no ksrs provided")
-
-    stg = await settings_store.get_all(session)
-    slots_cfg = stg["slots"]
-    footer_cfg = stg["footer"]
-    with_title = bool(stg.get("title_page", True))
-
-    cases = (await session.execute(select(Case).where(Case.ksr.in_(ksr_list)))).scalars().all()
-    # Порядок — как передан клиентом (обычно = порядок в таблице)
-    by_ksr = {c.ksr: c for c in cases}
-    ordered = [by_ksr[k] for k in ksr_list if k in by_ksr]
-    if not ordered:
-        raise HTTPException(404, "no matching cases")
-
-    data = pdfgen.build_batch_pdf([_serialize_case(c) for c in ordered], slots_cfg, footer_cfg, with_title)
-
-    # Пометить все как напечатанные + аудит
-    today = date.today()
-    for c in ordered:
-        c.printed_at = today
-        session.add(PrintHistory(ksr=c.ksr, note=f"batch of {len(ordered)}"))
-
-    return StreamingResponse(
-        BytesIO(data),
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'inline; filename="batch-{len(ordered)}-cases.pdf"'},
-    )
-
-
-@router.get("/{ksr}/file/pdf")
-async def case_single_file_pdf(ksr: str, path: str = Query(..., description="абсолютный путь файла"),
-                                session: AsyncSession = Depends(get_session)):
-    """Открыть один файл дела как PDF (для xlsx — сконвертировать через LibreOffice).
-
-    Печать одного документа из пакета без сборки всего дела.
-    """
-    from pathlib import Path as _P
-    c = await session.get(Case, ksr)
-    if not c:
-        raise HTTPException(404, "case not found")
-    # Проверка что путь принадлежит этому делу
-    all_paths = {f["path"] for files in (c.slots or {}).values() for f in files}
-    if path not in all_paths:
-        raise HTTPException(403, "file does not belong to this case")
-    p = _P(path)
-    if not p.exists():
-        raise HTTPException(404, "file not found on disk")
-    stg = await settings_store.get_all(session)
-    data = pdfgen.file_to_pdf_bytes(p, footer_ksr=ksr, footer_cfg=stg["footer"])
-    # Content-Disposition: только ASCII, поэтому используем ksr; оригинальное имя — в filename*
-    from urllib.parse import quote as _q
-    orig = _q(p.stem[:80])
-    return StreamingResponse(
-        BytesIO(data),
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": f"inline; filename=\"ksr-{ksr}.pdf\"; filename*=UTF-8''ksr-{ksr}-{orig}.pdf"
-        },
-    )
-
-
-@router.get("/{ksr}/pdf")
-async def case_pdf(ksr: str, session: AsyncSession = Depends(get_session)):
-    """Скачать/открыть PDF одного дела. Браузер откроет inline и предложит печать."""
-    c = await session.get(Case, ksr)
-    if not c:
-        raise HTTPException(404)
-    stg = await settings_store.get_all(session)
-    slots_cfg = stg["slots"]
-    footer_cfg = stg["footer"]
-    with_title = bool(stg.get("title_page", True))
-    data = pdfgen.build_case_pdf(_serialize_case(c), slots_cfg, footer_cfg, with_title)
-
-    c.printed_at = date.today()
-    session.add(PrintHistory(ksr=c.ksr))
-
-    return StreamingResponse(
-        BytesIO(data),
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'inline; filename="ksr-{ksr}.pdf"'},
-    )

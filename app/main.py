@@ -5,7 +5,9 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import logging_ring
+from contextlib import asynccontextmanager
+
+from . import logging_ring, scheduler
 from .config import settings
 from .db import get_session
 from .routes import cases as cases_router
@@ -16,7 +18,15 @@ from .templates import templates
 
 logging_ring.install()
 
-app = FastAPI(title="Система печати судебных дел")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    scheduler.start()
+    yield
+    scheduler.shutdown()
+
+
+app = FastAPI(title="Система печати судебных дел", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
 app.include_router(cases_router.router)
 app.include_router(sources_router.router)

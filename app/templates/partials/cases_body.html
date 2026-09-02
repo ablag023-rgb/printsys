@@ -82,18 +82,20 @@
           <td><span class="svc-badge">{{ c.service or '—' }}</span></td>
           <td class="cell-provider" title="{{ c.provider }}">{{ c.provider or '—' }}</td>
           <td>
-            {% if is_c and dup %}<span class="dot warn">Дубликаты</span>
+            {% if c.is_orphaned %}<span class="dot err" title="Файлы дела пропали с шары">Файлы пропали</span>
+            {% elif is_c and dup %}<span class="dot warn">Дубликаты</span>
             {% elif is_c %}<span class="dot ok">Полное</span>
             {% elif miss|length == slots_cfg|selectattr('required')|list|length %}<span class="dot err">Нет файлов</span>
             {% else %}<span class="dot warn" title="{{ miss|join(', ') }}">Нет: {{ miss|join(', ') }}</span>
+            {% endif %}
+            {% if c.is_stale %}
+              <span class="dup-warn" title="Файлы изменились после печати — требуется перепечать">изменено после печати</span>
             {% endif %}
           </td>
           <td>{% if c.printed_at %}<span class="date set">{{ c.printed_at|fmt_date }}</span>{% else %}<span class="date">—</span>{% endif %}</td>
           <td>{% if c.submitted_at %}<span class="date set">{{ c.submitted_at|fmt_date }}</span>{% else %}<span class="date">—</span>{% endif %}</td>
           <td>
             <div class="row-actions">
-              <a class="icon-btn sm" title="Печать" href="/cases/{{ c.ksr }}/pdf" target="_blank"
-                 onclick="event.stopPropagation();setTimeout(()=>htmx.trigger('body','cases-changed'),1200)">🖨</a>
               <button class="icon-btn sm" title="Отметить переданным" onclick="event.stopPropagation()"
                  hx-post="/cases/{{ c.ksr }}/submit-toggle" hx-swap="none">✓</button>
               <button class="icon-btn sm" title="Удалить"

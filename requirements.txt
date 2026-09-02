@@ -1,16 +1,29 @@
+# --- Веб и API ---
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
 jinja2==3.1.4
 python-multipart==0.0.9
+pydantic==2.9.2
+pydantic-settings==2.5.2
+
+# --- Хранилище ---
 sqlalchemy[asyncio]==2.0.35
 asyncpg==0.29.0
 alembic==1.13.3
-pydantic==2.9.2
-pydantic-settings==2.5.2
-openpyxl==3.1.5
+
+# --- Парсинг справок ---
+# calamine (Rust) основной: openpyxl падает с TypeError в parse_col_breaks
+# на части реальных файлов биллинга. openpyxl оставлен резервным.
 python-calamine==0.5.3
-pypdf==5.0.1
-reportlab==4.2.5
+openpyxl==3.1.5
+
+# --- Периодический скан ---
+apscheduler==3.10.4
+
+# --- Тесты ---
 pytest==8.3.3
 pytest-asyncio==0.24.0
 httpx==0.27.2
+
+# Сборка PDF (pypdf, reportlab) и печать (pywin32) живут в клиентском
+# дистрибутиве, а не здесь — см. SPEC §6.2.

@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     data_roots: str = "/data"
     # Корень для папок, загруженных через UI (writeable volume).
     upload_root: str = "/data/uploads"
+    # Период автоматического сканирования, минут. 0 — отключить (только по кнопке).
+    scan_interval_minutes: int = 10
 
     @property
     def data_root_paths(self) -> List[Path]:

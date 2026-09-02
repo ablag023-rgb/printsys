@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .. import services
+from .. import scheduler, services
 from ..config import settings
 from ..db import get_session
 from ..models import Source
@@ -133,24 +133,43 @@ async def upload_folder(
     return JSONResponse({"id": src.id, "name": src.name, "path": src.path, "files": written})
 
 
+def _run_to_diff(run) -> dict:
+    return {
+        "files_seen": run.files_seen, "files_new": run.files_new,
+        "files_changed": run.files_changed, "files_renamed": run.files_renamed,
+        "files_missing": run.files_missing, "files_locked": run.files_locked,
+        "cases_new": run.cases_new, "cases_updated": run.cases_updated,
+        "cases_orphaned": run.cases_orphaned, "parsed_count": run.parsed_count,
+        "duration_ms": run.duration_ms, "errors": [run.error] if run.error else [],
+    }
+
+
 @router.post("/{sid}/scan", response_class=HTMLResponse)
 async def scan_one(sid: int, request: Request, session: AsyncSession = Depends(get_session)):
     src = await session.get(Source, sid)
     if not src:
         raise HTTPException(404)
-    stats = await services.scan_source(session, src)
+    if scheduler.scan_lock.locked():
+        raise HTTPException(409, "Скан уже выполняется")
+    async with scheduler.scan_lock:
+        run = await services.scan_source(session, src, trigger="manual")
     rows = (await session.execute(select(Source).order_by(Source.id))).scalars().all()
     return templates.TemplateResponse(
         request, "partials/sources_list.html",
-        {"sources": rows, "roots": settings.data_root_paths, "diff": stats, "diff_src": src.name},
+        {"sources": rows, "roots": settings.data_root_paths,
+         "diff": _run_to_diff(run), "diff_src": src.name},
     )
 
 
 @router.post("/scan-all", response_class=HTMLResponse)
 async def scan_all(request: Request, session: AsyncSession = Depends(get_session)):
-    stats = await services.scan_all(session)
+    if scheduler.scan_lock.locked():
+        raise HTTPException(409, "Скан уже выполняется")
+    async with scheduler.scan_lock:
+        stats = await services.scan_all(session, trigger="manual")
     rows = (await session.execute(select(Source).order_by(Source.id))).scalars().all()
     return templates.TemplateResponse(
         request, "partials/sources_list.html",
-        {"sources": rows, "roots": settings.data_root_paths, "diff": stats, "diff_src": "все источники"},
+        {"sources": rows, "roots": settings.data_root_paths,
+         "diff": stats, "diff_src": "все источники"},
     )

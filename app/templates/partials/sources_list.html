@@ -1,12 +1,40 @@
 {% if diff is defined %}
-<div class="diff-panel">
-  <div style="width:36px;height:36px;border-radius:8px;background:#fff;display:grid;place-items:center;color:var(--info);font-size:18px">✓</div>
-  <div style="flex:1">
-    <div style="font-weight:600;font-size:13px;color:var(--info)">Скан завершён: {{ diff_src }}</div>
-    <div style="color:var(--text-muted);font-size:12px;margin-top:2px">Файлов обработано: {{ diff.files }}</div>
+<div class="diff-panel" style="flex-direction:column;align-items:stretch;gap:12px">
+  <div style="display:flex;align-items:center;gap:16px">
+    <div style="width:36px;height:36px;border-radius:8px;background:#fff;display:grid;place-items:center;color:var(--info);font-size:18px">
+      {% if diff.errors %}⚠{% else %}✓{% endif %}
+    </div>
+    <div style="flex:1">
+      <div style="font-weight:600;font-size:13px;color:var(--info)">Скан завершён: {{ diff_src }}</div>
+      <div style="color:var(--text-muted);font-size:12px;margin-top:2px">
+        Просмотрено файлов: {{ diff.files_seen }} ·
+        распарсено справок: {{ diff.parsed_count }} ·
+        {{ diff.duration_ms }} мс
+      </div>
+    </div>
   </div>
-  <div class="diff-item"><b>+{{ diff.new }}</b> новых дел</div>
-  <div class="diff-item"><b>{{ diff.updated }}</b> обновились</div>
+
+  <div style="display:flex;gap:20px;flex-wrap:wrap;padding-left:52px">
+    <div class="diff-item"><b>+{{ diff.cases_new }}</b> новых дел</div>
+    <div class="diff-item"><b>{{ diff.cases_updated }}</b> дел изменилось</div>
+    {% if diff.cases_orphaned %}
+      <div class="diff-item" style="color:var(--warn)"><b style="color:var(--warn)">{{ diff.cases_orphaned }}</b> дел без файлов</div>
+    {% endif %}
+  </div>
+
+  <div style="display:flex;gap:16px;flex-wrap:wrap;padding-left:52px;font-size:12px;color:var(--text-muted);border-top:1px solid rgba(2,132,199,.15);padding-top:10px">
+    <span>файлы: <b style="color:var(--ok)">+{{ diff.files_new }}</b> новых</span>
+    <span><b>{{ diff.files_changed }}</b> изменено</span>
+    {% if diff.files_renamed %}<span><b>{{ diff.files_renamed }}</b> переименовано</span>{% endif %}
+    {% if diff.files_missing %}<span style="color:var(--warn)"><b>{{ diff.files_missing }}</b> пропало</span>{% endif %}
+    {% if diff.files_locked %}<span style="color:var(--warn)"><b>{{ diff.files_locked }}</b> занято в Excel</span>{% endif %}
+  </div>
+
+  {% if diff.errors %}
+    <div style="padding-left:52px;color:var(--err);font-size:12px">
+      {% for e in diff.errors %}<div>{{ e }}</div>{% endfor %}
+    </div>
+  {% endif %}
 </div>
 {% endif %}
 

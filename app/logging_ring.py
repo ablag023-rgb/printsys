@@ -33,11 +33,28 @@ _handler = RingHandler(_buf, level=logging.INFO)
 _handler.setFormatter(logging.Formatter("%(message)s"))
 
 
+_STDOUT_MARK = "_printsys_stdout"
+
+
 def install() -> None:
-    """Подключить ring-handler к корневому и uvicorn/fastapi логгерам."""
+    """Подключить ring-handler (вкладка «Логи») и вывод в stdout (docker logs).
+
+    uvicorn настраивает только свои логгеры, поэтому сообщения приложения
+    без явного stdout-обработчика никуда не попадали.
+    """
     root = logging.getLogger()
+    root.setLevel(logging.INFO)
+
     if _handler not in root.handlers:
         root.addHandler(_handler)
+
+    if not any(getattr(h, _STDOUT_MARK, False) for h in root.handlers):
+        stream = logging.StreamHandler()
+        stream.setLevel(logging.INFO)
+        stream.setFormatter(logging.Formatter("%(levelname)-5s [%(name)s] %(message)s"))
+        setattr(stream, _STDOUT_MARK, True)
+        root.addHandler(stream)
+
     for name in ("uvicorn", "uvicorn.access", "uvicorn.error", "fastapi", "sqlalchemy"):
         lg = logging.getLogger(name)
         if _handler not in lg.handlers:

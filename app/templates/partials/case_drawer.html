@@ -34,9 +34,6 @@
             {% for f in files %}
               <div style="display:flex;align-items:center;gap:6px;margin-top:2px">
                 <div class="slot-file" title="{{ f.path }}" style="flex:1">{{ f.name }}</div>
-                <a class="icon-btn sm" title="Напечатать только этот файл"
-                   href="/cases/{{ c.ksr }}/file/pdf?path={{ f.path|urlencode }}"
-                   target="_blank" style="flex-shrink:0">🖨</a>
               </div>
             {% endfor %}
           </div>
@@ -73,7 +70,5 @@
             hx-on::after-request="closeDrawer()">
       {% if c.submitted_at %}↺ Снять «передано»{% else %}📅 Отметить переданным{% endif %}
     </button>
-    <a class="btn primary" href="/cases/{{ c.ksr }}/pdf" target="_blank"
-       onclick="setTimeout(()=>htmx.trigger('body','cases-changed'),1200)">🖨 Печать</a>
   </div>
 </div>

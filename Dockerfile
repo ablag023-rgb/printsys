@@ -2,13 +2,11 @@ FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PIP_NO_CACHE_DIR=1
 
+# Сборка PDF и печать выполняются на клиенте (Excel COM + win32print), поэтому
+# серверу не нужны ни LibreOffice, ни шрифты для рендеринга — см. SPEC §6.2.
+# cifs-utils нужен, если шара монтируется изнутри контейнера, а не средствами хоста.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    fonts-dejavu-core \
-    fonts-liberation2 \
-    fonts-noto-core \
-    libreoffice-core \
-    libreoffice-calc \
-    libreoffice-writer \
+    cifs-utils \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
