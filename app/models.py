@@ -186,3 +186,47 @@ class PrintHistory(Base):
     note: Mapped[str] = mapped_column(String(255), default="")
 
     case: Mapped[Case] = relationship(back_populates="history")
+
+
+class User(Base):
+    """Оператор системы.
+
+    Роли заведены на будущее (`role`), RBAC-проверки пока не навешиваются —
+    заказчик: «пока только один доступ по умолчанию» (SPEC §4.3).
+    """
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    login: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
+    full_name: Mapped[str] = mapped_column(String(255), default="")
+    pwd_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    role: Mapped[str] = mapped_column(String(24), default="admin")   # operator|supervisor|admin
+
+    is_active: Mapped[bool] = mapped_column(default=True, index=True)
+    # Учётка по умолчанию создаётся с известным паролем — сменить обязательно
+    must_change_password: Mapped[bool] = mapped_column(default=False)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class RefreshToken(Base):
+    """Refresh-токен, ротируемый.
+
+    Хранится хэшем. Повторное использование отозванного токена означает
+    компрометацию — отзывается вся цепочка (`family_id`), SPEC §4.3.
+    """
+    __tablename__ = "refresh_tokens"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    family_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+
+    device: Mapped[str] = mapped_column(String(255), default="")     # UA или имя клиента
+    client_ip: Mapped[str] = mapped_column(String(64), default="")
+
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_reason: Mapped[str] = mapped_column(String(64), default="")

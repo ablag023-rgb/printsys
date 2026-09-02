@@ -12,7 +12,12 @@
 настройка хранилищ в UI, доставка документов клиенту через сервер, периодический скан,
 инфраструктура (два MinIO + идемпотентный seed).
 
-**Не реализовано:** аутентификация и роли, Windows-клиент печати, полная модель
+**Аутентификация:** вход по логину/паролю (argon2id), JWT access 30 мин +
+ротируемый refresh 30 дней. Все роуты закрыты, открыты только `/login` и
+`/healthz`. Учётка по умолчанию из `.env` с обязательной сменой пароля.
+Роли заведены в модели, RBAC-проверок пока нет.
+
+**Не реализовано:** Windows-клиент печати, роли (RBAC), полная модель
 состояний дела (есть только флаги `is_stale`/`is_orphaned`).
 
 **Удалено как обесценившееся:** `mounter.py` (CIFS), `share.py` (UNC-резолв),
@@ -73,6 +78,7 @@ printsys/
 │   ├── db.py                  async engine + session_scope
 │   ├── models.py              ORM: AppSetting, Source, Case, PrintHistory
 │   ├── settings_store.py      доступ к настройкам + DEFAULTS
+│   ├── auth.py                argon2, JWT, ротируемые refresh-токены
 │   ├── s3.py                  клиент boto3, листинг, health, шифрование секретов
 │   ├── scanner.py             extract_ksr, parse_spravka(_bytes), match_slot, composition_hash
 │   ├── services.py            индексация хранилищ, пересборка дел, статистика
@@ -81,6 +87,7 @@ printsys/
 │   ├── logging_ring.py        ring buffer для вкладки «Логи» + stdout
 │   ├── routes/
 │   │   ├── cases.py           HTMX: список, карточка, статусы, массовые действия
+│   │   ├── auth_routes.py     вход/выход/refresh, смена пароля
 │   │   ├── storages.py        HTMX: настройка хранилищ S3, проверка, индексация
 │   │   ├── api.py             JSON-API клиента + доставка документов потоком
 │   │   ├── logs.py            HTMX: вкладка «Логи»
@@ -104,8 +111,10 @@ printsys/
 - **`scan_runs`** — журнал: новые/изменённые/пропавшие объекты, распарсено, попаданий в кеш, длительность.
 - **`cases`** (ksr PK) — дела. `slots` = `{slot_id: [{storage_id, key, name, size, etag}, ...]}`, `composition_hash`, `is_stale`, `is_orphaned`.
 - **`print_history`** (id, ksr FK, printed_at, note) — аудит фактов печати.
+- **`users`** — операторы: `login`, `pwd_hash` (argon2id), `role`, `must_change_password`.
+- **`refresh_tokens`** — ротируемые токены, хранятся хэшем; `family_id` для отзыва всей цепочки при детекте компрометации.
 
-Схема: миграции `0001_initial` … `0004_s3_storages`. При правках модели — генерировать новую миграцию:
+Схема: миграции `0001_initial` … `0005_auth`. При правках модели — генерировать новую миграцию:
 ```bash
 docker compose exec web alembic revision --autogenerate -m "описание"
 docker compose exec web alembic upgrade head

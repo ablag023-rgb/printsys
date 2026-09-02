@@ -21,8 +21,16 @@ class Settings(BaseSettings):
     allow_runtime_mount: bool = True
     # Куда монтировать шары, подключённые через UI.
     mount_root: str = "/data/mounts"
-    # Ключ шифрования паролей от шар в БД. В проде задать своим значением!
+    # Ключ шифрования секретов и подписи JWT. В проде задать своим значением!
     secret_key: str = "printsys-dev-key-change-me"
+
+    # Учётная запись по умолчанию — создаётся при первом старте.
+    # Пароль обязателен к смене при первом входе.
+    admin_login: str = "admin"
+    admin_password: str = "admin"
+    # Время жизни токенов
+    access_token_minutes: int = 30
+    refresh_token_days: int = 30
 
     @property
     def mount_root_path(self) -> Path:

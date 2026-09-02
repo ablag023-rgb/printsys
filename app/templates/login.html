@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Вход · Система печати судебных дел</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/static/style.css?v={{ static_v() }}">
+</head>
+<body>
+<div style="min-height:100vh;display:grid;place-items:center;padding:20px">
+  <div style="width:100%;max-width:380px">
+    <div style="display:flex;align-items:center;gap:12px;justify-content:center;margin-bottom:24px">
+      <div class="brand-mark">СП</div>
+      <div>
+        <div class="brand-title">Система печати судебных дел</div>
+        <div class="brand-sub">Вход в систему</div>
+      </div>
+    </div>
+
+    <div class="card" style="padding:24px">
+      {% if error %}<div class="banner err" style="margin-bottom:16px">{{ error }}</div>{% endif %}
+      <form method="post" action="/login">
+        <input type="hidden" name="next" value="{{ next }}">
+        <div class="field" style="margin-bottom:14px">
+          <label>Логин</label>
+          <input class="input" name="login" required autofocus autocomplete="username">
+        </div>
+        <div class="field" style="margin-bottom:18px">
+          <label>Пароль</label>
+          <input class="input" name="password" type="password" required autocomplete="current-password">
+        </div>
+        <button class="btn primary" type="submit" style="width:100%;justify-content:center">Войти</button>
+      </form>
+    </div>
+  </div>
+</div>
+</body>
+</html>

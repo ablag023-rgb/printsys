@@ -27,6 +27,13 @@
       <button class="tab" data-tab="logs">Логи</button>
     </div>
     <div class="header-actions">
+      {% if user %}
+        <span style="font-size:12px;color:var(--text-muted)" title="{{ user.role }}">{{ user.login }}</span>
+      {% endif %}
+      <a href="/password" class="btn ghost" title="Сменить пароль">🔑</a>
+      <form method="post" action="/logout" style="display:inline">
+        <button class="btn ghost" type="submit" title="Выйти">Выйти</button>
+      </form>
       <a href="/settings/export" class="btn ghost">⬇ Экспорт</a>
       <button class="btn primary"
               hx-post="/storages/scan"
