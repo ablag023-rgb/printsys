@@ -25,7 +25,8 @@ DEFAULT_LABELS: Dict[str, List[str]] = {
 }
 
 DEFAULT_FOOTER = {"enabled": True, "size": 9, "color": "#BFBFBF"}
-DEFAULT_TITLE_PAGE = True
+# Титульный лист по умолчанию ВЫКЛЮЧЕН — включается в настройках при необходимости
+DEFAULT_TITLE_PAGE = False
 
 DEFAULTS: Dict[str, Any] = {
     "slots": DEFAULT_SLOTS,
