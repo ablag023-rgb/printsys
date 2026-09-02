@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Per-user установщик клиента печати.
+
+  Ставится в профиль пользователя и НЕ требует прав администратора: это главное
+  требование заказчика — админов на местах нет. Отсюда все решения ниже:
+
+    * InstallScope="perUser" + InstallPrivileges="limited" — MSI не поднимает UAC;
+    * INSTALLFOLDER под LocalAppDataFolder\Programs, а не Program Files:
+      в Program Files обычный пользователь писать не может;
+    * все записи реестра в HKCU (HKLM недоступен без прав);
+    * ярлык в личном меню «Пуск» (ProgramMenuFolder при perUser
+      разворачивается в профиль пользователя).
+
+  Адрес сервера задаётся при установке:
+      msiexec /i printsys.msi /qn SERVERURL=http://printsys.corp.local:8001
+  и попадает в HKCU\Software\printsys\ServerUrl, откуда его читает клиент.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*"
+           Name="Система печати судебных дел"
+           Language="1049"
+           Codepage="1251"
+           Version="$(var.Version)"
+           Manufacturer="Юридическая служба"
+           UpgradeCode="7E5B1C2A-9D34-4F58-9C1E-3A6B0F2D8471">
+
+    <Package InstallerVersion="500"
+             Compressed="yes"
+             InstallScope="perUser"
+             InstallPrivileges="limited"
+             Description="Клиент печати судебных дел"
+             Languages="1049"
+             SummaryCodepage="1251" />
+
+    <!-- Обновление ставится поверх: старая версия удаляется перед копированием
+         новой, чтобы не оставалось файлов от предыдущей сборки PyInstaller -->
+    <MajorUpgrade DowngradeErrorMessage="Уже установлена более новая версия." />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Адрес сервера. Пустое значение оставляет ключ ненаписанным, и клиент
+         берёт адрес из printsys.json рядом с exe либо из своих настроек. -->
+    <Property Id="SERVERURL" Secure="yes" />
+
+    <!-- Путь в «Установке и удалении программ»: сам Installer его не заполняет,
+         а без него инвентаризация парка не видит, куда встал клиент -->
+    <SetProperty Id="ARPINSTALLLOCATION" Value="[INSTALLFOLDER]" After="CostFinalize" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="ProgramsFolder" Name="Programs">
+          <Directory Id="INSTALLFOLDER" Name="printsys" />
+        </Directory>
+      </Directory>
+      <Directory Id="ProgramMenuFolder" />
+    </Directory>
+
+    <DirectoryRef Id="INSTALLFOLDER">
+      <!-- KeyPath компонентов с ярлыком и реестром — записи HKCU: для per-user
+           установки файл ключом быть не может, это правило ICE. -->
+      <Component Id="RegistryAndShortcut" Guid="*">
+        <RegistryKey Root="HKCU" Key="Software\printsys">
+          <RegistryValue Name="InstallDir" Type="string" Value="[INSTALLFOLDER]" KeyPath="yes" />
+        </RegistryKey>
+        <Shortcut Id="StartMenuShortcut"
+                  Directory="ProgramMenuFolder"
+                  Name="Система печати судебных дел"
+                  Description="Печать пакетов документов для подачи в суд"
+                  Target="[INSTALLFOLDER]printsys.exe"
+                  WorkingDirectory="INSTALLFOLDER" />
+        <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
+      </Component>
+
+      <!-- Адрес сервера пишем отдельным компонентом с условием: без SERVERURL
+           ключ не создаётся вовсе, а не создаётся пустым — иначе пустая строка
+           перекрыла бы значение из printsys.json. -->
+      <Component Id="ServerUrlRegistry" Guid="*">
+        <Condition>SERVERURL</Condition>
+        <RegistryKey Root="HKCU" Key="Software\printsys">
+          <RegistryValue Name="ServerUrl" Type="string" Value="[SERVERURL]" KeyPath="yes" />
+        </RegistryKey>
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="Main" Title="Клиент печати" Level="1">
+      <ComponentGroupRef Id="ClientFiles" />
+      <ComponentRef Id="RegistryAndShortcut" />
+      <ComponentRef Id="ServerUrlRegistry" />
+    </Feature>
+
+    <!--
+      Каталог данных (%LOCALAPPDATA%\printsys) установщик НЕ создаёт и при
+      удалении НЕ трогает: там очередь печати. Снос клиента не должен
+      уничтожать сведения о незавершённом пакете — их может понадобиться
+      разобрать после переустановки.
+    -->
+  </Product>
+</Wix>
