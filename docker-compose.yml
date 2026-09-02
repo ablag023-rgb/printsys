@@ -1,4 +1,51 @@
 services:
+  # ============ Хранилища документов (симуляция двух систем-источников) ============
+  s3-billing:                 # «Биллинг/РЦ» — справки о расчётах, якоря дел
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_BILLING_KEY:-billing_key}
+      MINIO_ROOT_PASSWORD: ${S3_BILLING_SECRET:-billing_secret_123}
+    ports: ["9101:9000", "9191:9001"]
+    volumes: [s3_billing:/data]
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  s3-docflow:                 # «Юр. документооборот» — выписки, платёжки, прочее
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_DOCFLOW_KEY:-docflow_key}
+      MINIO_ROOT_PASSWORD: ${S3_DOCFLOW_SECRET:-docflow_secret_123}
+    ports: ["9102:9000", "9192:9001"]
+    volumes: [s3_docflow:/data]
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  s3-init:                    # одноразовое создание бакетов, идемпотентно
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    depends_on:
+      s3-billing: {condition: service_healthy}
+      s3-docflow: {condition: service_healthy}
+    entrypoint: >
+      /bin/sh -c "
+      set -e;
+      mc alias set billing http://s3-billing:9000 ${S3_BILLING_KEY:-billing_key} ${S3_BILLING_SECRET:-billing_secret_123};
+      mc alias set docflow http://s3-docflow:9000 ${S3_DOCFLOW_KEY:-docflow_key} ${S3_DOCFLOW_SECRET:-docflow_secret_123};
+      mc mb --ignore-existing billing/ksr-spravki;
+      mc mb --ignore-existing docflow/ksr-dokumenty;
+      mc anonymous set none billing/ksr-spravki;
+      mc anonymous set none docflow/ksr-dokumenty;
+      echo 'buckets ready';
+      "
+    restart: "no"
+
   db:
     image: postgres:16-alpine
     environment:
@@ -20,7 +67,11 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      s3-init:
+        condition: service_completed_successfully
     environment:
+      S3_BILLING_ENDPOINT: http://s3-billing:9000
+      S3_DOCFLOW_ENDPOINT: http://s3-docflow:9000
       PG_DSN: postgresql+asyncpg://printsys:printsys@db:5432/printsys
       DATA_ROOTS: /data
       SCAN_INTERVAL_MINUTES: "${SCAN_INTERVAL_MINUTES:-10}"
@@ -51,6 +102,8 @@ volumes:
   pgdata:
   uploads:
   mounts:
+  s3_billing:
+  s3_docflow:
 
   # Сетевая шара через CIFS-драйвер Docker: монтирование объявлено здесь,
   # привилегированный контейнер не нужен. Учётные данные — в .env (в git не попадает).
