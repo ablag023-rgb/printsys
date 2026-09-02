@@ -34,6 +34,9 @@
       <form method="post" action="/logout" style="display:inline">
         <button class="btn ghost" type="submit" title="Выйти">Выйти</button>
       </form>
+      <button class="btn ghost client-only" onclick="openQueue()" title="Очередь печати">
+        🖨 Очередь<span id="queue-badge" class="badge"></span>
+      </button>
       <a href="/settings/export" class="btn ghost">⬇ Экспорт</a>
       <button class="btn primary"
               hx-post="/storages/scan"
@@ -84,6 +87,8 @@
 <form id="bulkbar-form" class="bulkbar" method="post" hx-post="/cases/bulk" hx-target="#cases-panel" hx-swap="none">
   <span class="bulkbar-count"><span id="bulkbar-n">0</span> выбрано</span>
   <span class="bulkbar-sep"></span>
+  <button type="button" class="bulkbar-btn client-only primary"
+          onclick="printSelected()">🖨 Печать выбранных</button>
   <button type="submit" class="bulkbar-btn" onclick="setBulkAction('mark-submitted')">✓ Отметить переданными</button>
   <button type="submit" class="bulkbar-btn" onclick="setBulkAction('clear-statuses')">↺ Снять статусы</button>
   <button type="submit" class="bulkbar-btn danger" onclick="return confirmBulk('delete','Удалить выбранные?')">🗑 Удалить</button>
@@ -94,6 +99,44 @@
 <!-- DRAWER slot -->
 <div id="drawer-slot"></div>
 
+<!-- ОКНА КЛИЕНТА ПЕЧАТИ. В браузере скрыты: печатать может только клиент,
+     у него есть принтер оператора, Excel и очередь печати на его машине. -->
+<div id="print-progress" class="modal client-only">
+  <div class="modal-card">
+    <div class="modal-head">Печать пакета
+      <span class="muted">— <span id="pp-done">0</span> из <span id="pp-total">0</span></span>
+    </div>
+    <pre id="pp-log" class="modal-log"></pre>
+    <div class="modal-foot">
+      <button class="btn" id="pp-stop" onclick="stopPrint()">Остановить</button>
+      <button class="btn primary" id="pp-close" onclick="closeProgress()">Закрыть</button>
+    </div>
+  </div>
+</div>
+
+<div id="queue-modal" class="modal client-only">
+  <div class="modal-card wide">
+    <div class="modal-head">Очередь печати</div>
+    <div id="queue-box" class="modal-body"></div>
+    <div class="modal-foot">
+      <button class="btn" onclick="purgeQueue()">Убрать старые записи</button>
+      <button class="btn" id="q-resume" onclick="closeQueue();resumeBatch()">Продолжить пакет</button>
+      <button class="btn primary" onclick="closeQueue()">Закрыть</button>
+    </div>
+  </div>
+</div>
+
+<div id="preview-modal" class="modal client-only">
+  <div class="modal-card wide">
+    <div class="modal-head">Состав дела</div>
+    <div id="preview-box" class="modal-body"></div>
+    <div class="modal-foot">
+      <button class="btn primary" onclick="closePreview()">Закрыть</button>
+    </div>
+  </div>
+</div>
+
 <script src="/static/app.js?v={{ static_v() }}"></script>
+<script src="/static/client.js?v={{ static_v() }}"></script>
 </body>
 </html>

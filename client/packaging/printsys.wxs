@@ -63,9 +63,10 @@
         <RegistryKey Root="HKCU" Key="Software\printsys">
           <RegistryValue Name="InstallDir" Type="string" Value="[INSTALLFOLDER]" KeyPath="yes" />
         </RegistryKey>
-        <!-- Ярлык ведёт на launcher, а не на printsys.exe: консольная утилита
-             отрабатывает команду и завершается, окно закрывается быстрее, чем
-             оператор успевает его прочитать.
+        <!-- Ярлык ведёт на окно оператора. На printsys.exe вести нельзя:
+             консольная утилита отрабатывает команду и завершается, окно
+             закрывается быстрее, чем оператор успевает его прочитать.
+             Командная строка остаётся доступной через Запустить.cmd.
 
              Иконку НЕ задаём через <Icon SourceFile="…printsys.exe">: WiX
              встраивает в установщик весь указанный файл целиком, и MSI пухнет
@@ -75,7 +76,7 @@
                   Directory="ProgramMenuFolder"
                   Name="Система печати судебных дел"
                   Description="Печать пакетов документов для подачи в суд"
-                  Target="[INSTALLFOLDER]Запустить.cmd"
+                  Target="[INSTALLFOLDER]printsys-gui.exe"
                   WorkingDirectory="INSTALLFOLDER" />
         <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
       </Component>

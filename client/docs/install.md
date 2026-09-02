@@ -17,14 +17,14 @@
 Ставится в профиль пользователя, **UAC не запрашивает**:
 
 ```bash
-msiexec /i printsys-0.4.0-peruser.msi /qn SERVERURL=http://printsys.corp.local:8001
+msiexec /i printsys-0.5.0-peruser.msi /qn SERVERURL=http://printsys.corp.local:8001
 ```
 
 | Что | Куда |
 |---|---|
-| `printsys.exe` + зависимости | `%LOCALAPPDATA%\Programs\printsys\` |
+| `printsys-gui.exe`, `printsys.exe` + зависимости | `%LOCALAPPDATA%\Programs\printsys\` |
 | `HKCU\Software\printsys\ServerUrl` | реестр пользователя |
-| ярлык | личное меню «Пуск» (ведёт на `Запустить.cmd`) |
+| ярлык | личное меню «Пуск» (ведёт на `printsys-gui.exe`) |
 | очередь и настройки | `%LOCALAPPDATA%\printsys\` |
 
 Решения в [`packaging/printsys.wxs`](../packaging/printsys.wxs):
@@ -40,9 +40,10 @@ msiexec /i printsys-0.4.0-peruser.msi /qn SERVERURL=http://printsys.corp.local:8
 - `Codepage="1251"` — без него линковщик не принимает кириллицу в названии
   продукта;
 - `MajorUpgrade` — обновление ставится поверх;
-- ярлык ведёт на `Запустить.cmd`, а не на `printsys.exe`: консольная утилита
-  отрабатывает команду и завершается, окно закрывается быстрее, чем оператор
-  успевает его прочитать;
+- ярлык ведёт на `printsys-gui.exe` — окно оператора. На `printsys.exe` вести
+  нельзя: консольная утилита отрабатывает команду и завершается, окно
+  закрывается быстрее, чем его успевают прочитать. Командная строка остаётся
+  доступной через `Запустить.cmd` в каталоге программы;
 - иконка НЕ задаётся через `<Icon SourceFile="…printsys.exe">`: WiX встраивает
   указанный файл в установщик целиком, и MSI пухнет с 43 до 57 МБ;
 - каталог данных установщик **не создаёт и при удалении не трогает**: там
@@ -75,7 +76,7 @@ sha256 `2c1888d5d1dba377fc7fa14444cf556963747ff9a0a289a3599cf09da03b9e2e`),
 
 ## Вариант 2. Переносимая раздача (ZIP)
 
-Оператор получает `printsys-0.4.0-portable.zip` (~44 МБ), распаковывает,
+Оператор получает `printsys-0.5.0-portable.zip` (~61 МБ), распаковывает,
 например, в `%LOCALAPPDATA%\Programs\printsys`, запускает `Запустить.cmd` — и
 работает. Ни установки, ни реестра, ни администратора. Python на машине не
 нужен, он внутри.
@@ -133,6 +134,9 @@ Manager (refresh-токен) — то есть **вне** каталога пр�
 ## Требования к машине
 
 - Windows 10/11 x64.
+- **WebView2** — окно оператора показывает веб-интерфейс сервера. Компонент
+  входит в Windows 10/11 (ставится вместе с Edge), отдельной установки обычно
+  не требует. Если его нет, окно не откроется — останется командная строка.
 - **Microsoft Excel** — конвертация справок xlsx идёт через Excel COM, он даёт
   вёрстку 1-в-1 с тем, что видит оператор. Без Excel клиент не падает, но
   переходит на резервный построчный рендер: содержимое сохраняется,
@@ -147,8 +151,8 @@ Manager (refresh-токен) — то есть **вне** каталога пр�
 ```bash
 pip install -r requirements.txt pyinstaller
 python -m PyInstaller --noconfirm --clean printsys.spec
-python packaging/build_zip.py --server http://printsys.corp.local:8001   # ZIP, 43.6 МБ
-python packaging/build_msi.py --version 0.4.0                           # MSI, 42.9 МБ
+python packaging/build_zip.py --server http://printsys.corp.local:8001   # ZIP, 61.4 МБ
+python packaging/build_msi.py --version 0.5.0                           # MSI, 60.2 МБ
 ```
 
 `build_zip.py` без `--server` убирает `printsys.json` из каталога — чтобы

@@ -12,6 +12,12 @@ reportlab==4.5.1           # титул, заглушки, рендер xlsx б�
 python-calamine==0.8.2     # основной ридер xlsx
 openpyxl==3.1.5            # резервный ридер xlsx
 
+# --- Окно оператора: веб-интерфейс сервера в WebView2 ---
+# Второго набора шаблонов не заводим: клиент показывает ту же страницу, что
+# и браузер. WebView2 есть в Windows 10/11 из коробки, ставить нечего.
+pywebview==6.2.1
+pythonnet==3.1.0          # мост pywebview к EdgeChromium
+
 # --- Windows: печать, Excel COM, хранение токена ---
 pywin32==311; sys_platform == "win32"
 keyring==25.7.0; sys_platform == "win32"

@@ -1,8 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
 """Сборка клиента: два исполняемых файла в одном каталоге.
 
-  printsys-gui.exe  — окно оператора, console=False: иначе за окном всегда
-                      висит чёрная консоль;
+  printsys-gui.exe  — окно оператора (веб-интерфейс сервера в WebView2),
+                      console=False: иначе за окном всегда висит чёрная консоль;
   printsys.exe      — та же функциональность из командной строки, console=True:
                       без консоли вывод команд некуда девать.
 
@@ -18,7 +18,10 @@ HIDDEN = [
     "win32timezone",
     "keyring.backends.Windows",   # keyring ищет бэкенды через entry points
     "printsys_client.cli",
-    "printsys_client.gui",
+    "printsys_client.webui",
+    # pywebview выбирает бэкенд в рантайме, статически анализатор его не видит
+    "webview.platforms.edgechromium",
+    "clr",
 ]
 
 

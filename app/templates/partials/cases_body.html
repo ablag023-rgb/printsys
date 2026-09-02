@@ -96,6 +96,8 @@
           <td>{% if c.submitted_at %}<span class="date set">{{ c.submitted_at|fmt_date }}</span>{% else %}<span class="date">—</span>{% endif %}</td>
           <td>
             <div class="row-actions">
+              <button class="icon-btn sm client-only" title="Состав дела и число листов"
+                 onclick="event.stopPropagation();previewCase('{{ c.ksr }}')">🖨</button>
               <button class="icon-btn sm" title="Отметить переданным" onclick="event.stopPropagation()"
                  hx-post="/cases/{{ c.ksr }}/submit-toggle" hx-swap="none">✓</button>
               <button class="icon-btn sm" title="Удалить"

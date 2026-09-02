@@ -187,6 +187,18 @@ class PrintsysAPI:
         clear_refresh(self.cfg.server_url)
         self._access = self._refresh = None
 
+    def adopt_session(self, access: str, refresh: str = "") -> None:
+        """Принять сеанс, выданный сервером окну входа.
+
+        Окно клиента показывает обычную страницу входа сервера, а клиент
+        забирает те же cookie — второй формы входа нет. Refresh кладём в
+        Credential Manager, чтобы командная строка работала под тем же входом.
+        """
+        self._access = access or None
+        if refresh:
+            self._refresh = refresh
+            save_refresh(self.cfg.server_url, refresh)
+
     def _headers(self) -> Dict[str, str]:
         if not self._access:
             raise AuthError("Нет активной сессии")

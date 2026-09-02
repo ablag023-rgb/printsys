@@ -176,3 +176,53 @@ tbody tr:hover .row-actions{opacity:1}
 .empty p{margin:0 0 16px;font-size:13px}
 
 code.mono{font-family:var(--font-mono);background:var(--surface-2);padding:2px 6px;border-radius:4px;color:var(--text-muted);font-size:12px}
+
+/* ============== ЭЛЕМЕНТЫ КЛИЕНТА ПЕЧАТИ ==============
+   В браузере скрыты: печатать может только клиент — у него есть принтер
+   оператора, установленный Excel и очередь печати на его машине.
+   Класс in-client ставит client.js, когда страница открыта внутри клиента. */
+.client-only { display: none !important; }
+body.in-client .client-only { display: inline-flex !important; }
+body.in-client .modal.client-only { display: none !important; }
+body.in-client .modal.client-only.show { display: flex !important; }
+
+.badge {
+  display: none; min-width: 18px; height: 18px; padding: 0 5px; margin-left: 6px;
+  border-radius: 9px; background: var(--err); color: #fff;
+  font-size: 11px; line-height: 18px; text-align: center;
+}
+.badge.show { display: inline-block; }
+
+.modal {
+  position: fixed; inset: 0; z-index: 90; display: none;
+  align-items: center; justify-content: center;
+  background: rgba(11, 18, 32, .45);
+}
+.modal.show { display: flex; }
+.modal-card {
+  width: min(720px, 92vw); max-height: 86vh; display: flex; flex-direction: column;
+  background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow-lg);
+}
+.modal-card.wide { width: min(1000px, 94vw); }
+.modal-head {
+  padding: 14px 18px; font-weight: 600; border-bottom: 1px solid var(--border);
+}
+.modal-body { padding: 14px 18px; overflow: auto; }
+.modal-log {
+  margin: 0; padding: 14px 18px; overflow: auto; flex: 1; min-height: 220px;
+  font-family: var(--font-mono, 'JetBrains Mono', monospace); font-size: 12px;
+  line-height: 1.55; white-space: pre-wrap; background: var(--surface-2);
+}
+.modal-foot {
+  padding: 12px 18px; display: flex; gap: 8px; justify-content: flex-end;
+  border-top: 1px solid var(--border);
+}
+
+table.mini { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.mini th, table.mini td {
+  padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: left;
+}
+table.mini tr.row-bad td { color: var(--err); }
+table.mini tr.row-done td { color: var(--text-muted); }
+.btn.tiny { padding: 2px 8px; font-size: 12px; }
+.warn { color: var(--warn); }
