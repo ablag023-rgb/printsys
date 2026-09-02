@@ -52,50 +52,82 @@ def walk_dir(root: Path) -> Iterable[Path]:
             yield p
 
 
-def parse_spravka(xlsx_path: Path, labels: Dict[str, List[str]]) -> Dict[str, str]:
-    """Извлечь метаданные из xlsx-справки по конфигу лейблов."""
-    meta = {"date_formed": "", "account": "", "period": "", "provider": "", "service": ""}
+def _read_cells(xlsx_path: Path) -> List[tuple]:
+    """Прочитать непустые ячейки первого листа как (row, col, value).
+
+    Используем calamine (Rust): openpyxl падает с TypeError в parse_col_breaks
+    на части реальных файлов биллинга (некорректный атрибут id у colBreaks).
+    openpyxl оставлен резервным путём.
+    """
+    cells: List[tuple] = []
+    try:
+        from python_calamine import CalamineWorkbook
+
+        wb = CalamineWorkbook.from_path(str(xlsx_path))
+        rows = wb.get_sheet_by_index(0).to_python()
+        for r_idx, row in enumerate(rows):
+            for c_idx, v in enumerate(row):
+                if v is None or (isinstance(v, str) and not v.strip()):
+                    continue
+                cells.append((r_idx, c_idx, v))
+        return cells
+    except Exception:  # noqa: BLE001
+        pass
+
     try:
         wb = load_workbook(xlsx_path, data_only=True, read_only=True)
         sheet = wb.active
-        # Собираем все непустые ячейки в список (r, c, value)
-        cells: List[tuple] = []
-        for row_idx, row in enumerate(sheet.iter_rows(values_only=False)):
-            for col_idx, cell in enumerate(row):
+        for r_idx, row in enumerate(sheet.iter_rows(values_only=False)):
+            for c_idx, cell in enumerate(row):
                 v = cell.value
                 if v is None or (isinstance(v, str) and not v.strip()):
                     continue
-                cells.append((row_idx, col_idx, v))
+                cells.append((r_idx, c_idx, v))
         wb.close()
-    except Exception as e:  # noqa: BLE001
+    except Exception:  # noqa: BLE001
+        return []
+    return cells
+
+
+def parse_spravka(xlsx_path: Path, labels: Dict[str, List[str]]) -> Dict[str, str]:
+    """Извлечь метаданные из xlsx-справки по конфигу лейблов."""
+    meta = {"date_formed": "", "account": "", "period": "", "provider": "", "service": ""}
+    cells = _read_cells(xlsx_path)
+    if not cells:
         return meta
 
+    # Лейблы вида «Лицевой счет №:» — убираем № и хвостовые ": " перед сравнением
     def norm(s: Any) -> str:
-        return str(s).rstrip(": ").strip().lower()
+        return str(s).replace("№", "").rstrip(": ").strip().lower()
 
-    def cell_at(r: int, c: int) -> Optional[Any]:
-        for cr, cc, v in cells:
-            if cr == r and cc == c:
-                return v
-        return None
+    index = {(cr, cc): v for cr, cc, v in cells}
+
+    # Значение может стоять не в соседней ячейке, а через одну-две:
+    # в реальных справках лейбл в A, значение в C (между ними merged-ячейки).
+    # Поэтому сканируем вправо до первой непустой ячейки.
+    MAX_SCAN_RIGHT = 6
 
     for field, label_variants in labels.items():
         norm_labels = [norm(x) for x in label_variants]
-        for cr, cc, v in cells:
+        for (cr, cc), v in sorted(index.items()):
             nv = norm(v)
-            if any(nv == nl or nv.startswith(nl) for nl in norm_labels):
-                raw = str(v)
-                colon_idx = raw.find(":")
-                if colon_idx > 0 and raw[colon_idx + 1 :].strip():
-                    meta[field] = raw[colon_idx + 1 :].strip()
-                    break
-                right = cell_at(cr, cc + 1)
+            if not any(nv == nl or nv.startswith(nl) for nl in norm_labels):
+                continue
+            raw = str(v)
+            colon_idx = raw.find(":")
+            if colon_idx > 0 and raw[colon_idx + 1 :].strip():
+                meta[field] = raw[colon_idx + 1 :].strip()
+                break
+            for dx in range(1, MAX_SCAN_RIGHT + 1):
+                right = index.get((cr, cc + dx))
                 if right not in (None, ""):
                     if isinstance(right, datetime):
                         meta[field] = right.strftime("%d.%m.%Y")
                     else:
                         meta[field] = str(right).strip()
                     break
+            if meta[field]:
+                break
     return meta
 
 
