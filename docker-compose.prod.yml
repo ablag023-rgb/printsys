@@ -26,14 +26,26 @@ services:
     ports:
       - "${WEB_PORT:-8000}:8000"
     volumes:
-      # Смонтируйте нужные папки в /data внутри контейнера (админ-режим, read-only). Пример:
-      # - /mnt/network/ksr:/data/network:ro
-      - ${HOST_DATA_DIR:-./mount}:/data:ro
+      # ВАРИАНТ А (рекомендуется): шара смонтирована на хосте (autofs/systemd/fstab),
+      # сюда прокидывается bind-mount. Хост сам занимается переподключением.
+      - ${HOST_DATA_DIR:-./mount}:/data/share:ro
       # Writeable volume для папок, загруженных через UI:
       - uploads:/data/uploads
+      # ВАРИАНТ Б: монтирование средствами Docker — раскомментируйте вместе
+      # с томом ksr_share ниже, и уберите bind-mount выше.
+      # - ksr_share:/data/share:ro
     command: >
       sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2"
 
 volumes:
   pgdata:
   uploads:
+
+  # ВАРИАНТ Б — монтирование шары средствами Docker (CIFS-драйвер).
+  # Учётные данные в .env, привилегированный контейнер не нужен.
+  # ksr_share:
+  #   driver: local
+  #   driver_opts:
+  #     type: cifs
+  #     device: "//${SMB_HOST:?SMB_HOST not set}/${SMB_SHARE:?SMB_SHARE not set}"
+  #     o: "username=${SMB_USER},password=${SMB_PASSWORD},domain=${SMB_DOMAIN:-},ro,uid=0,gid=0,iocharset=utf8,vers=3.0,noserverino"

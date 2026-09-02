@@ -49,14 +49,38 @@
 {% endif %}
 
 {% for s in sources %}
+{% set h = (health or {}).get(s.id) %}
 <div class="source-item">
-  <div class="source-icon">📁</div>
+  <div class="source-icon">{% if h and not h.ok %}⚠{% else %}📁{% endif %}</div>
   <div class="source-body">
-    <div class="source-name">{{ s.name }}</div>
+    <div class="source-name">
+      {{ s.name }}
+      {% if h %}
+        {% if h.ok %}<span class="dot ok" style="margin-left:8px;font-weight:400">доступна</span>
+        {% else %}<span class="dot err" style="margin-left:8px;font-weight:400" title="{{ h.message }}">
+            {% if h.state == 'stale' %}связь потеряна{% elif h.state == 'denied' %}нет прав{% else %}не найдена{% endif %}
+          </span>
+        {% endif %}
+      {% endif %}
+    </div>
     <div class="source-path">{{ s.path }}</div>
+
+    <form hx-post="/sources/{{ s.id }}/unc" hx-target="#sources-panel" hx-swap="innerHTML"
+          style="display:flex;align-items:center;gap:8px;margin-top:6px">
+      <label style="font-size:11px;color:var(--text-soft);text-transform:uppercase;letter-spacing:.08em;font-weight:600">UNC</label>
+      <input class="input" name="root_unc" value="{{ s.root_unc }}"
+             placeholder="\\srv-docs\ksr — путь, по которому папку видит клиент"
+             style="flex:1;max-width:420px;height:28px;font-family:var(--font-mono);font-size:12px">
+      <button class="btn" type="submit" style="height:28px;padding:4px 10px;font-size:12px">Сохранить</button>
+      {% if not s.root_unc %}
+        <span class="dot warn" style="font-size:11px" title="Без UNC клиент не сможет прочитать файлы для печати">клиент печатать не сможет</span>
+      {% endif %}
+    </form>
+
     <div class="source-meta">
       <span>{{ s.file_count or 0 }} файлов</span>
       <span>{% if s.last_scan %}Последний скан: {{ s.last_scan|fmt_date }}{% else %}Ещё не сканировалась{% endif %}</span>
+      {% if h and not h.ok %}<span style="color:var(--err)">{{ h.message }}</span>{% endif %}
     </div>
   </div>
   <div class="source-actions">
@@ -109,9 +133,14 @@
         <label>Название</label>
         <input class="input" name="name" placeholder="Например: Сетевая ТЭ Q3" required>
       </div>
-      <div class="field" style="flex:2 1 300px">
+      <div class="field" style="flex:2 1 260px">
         <label>Путь внутри контейнера</label>
-        <input class="input" name="path" placeholder="/data/demo" required>
+        <input class="input" name="path" placeholder="/data/share" required>
+      </div>
+      <div class="field" style="flex:2 1 260px">
+        <label>UNC-путь для клиента</label>
+        <input class="input" name="root_unc" placeholder="\\srv-docs\ksr"
+               style="font-family:var(--font-mono);font-size:12px">
       </div>
       <button class="btn" type="submit">Добавить</button>
     </form>

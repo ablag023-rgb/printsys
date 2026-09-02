@@ -9,13 +9,18 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .. import scheduler, services
+from .. import scheduler, services, share
 from ..config import settings
 from ..db import get_session
 from ..models import Source
 from ..templates import templates
 
 log = logging.getLogger("printsys.sources")
+
+
+def _health_map(rows) -> dict:
+    """Состояние каждого источника: доступен ли путь прямо сейчас."""
+    return {r.id: share.check_path(r.path) for r in rows}
 
 router = APIRouter(prefix="/sources", tags=["sources"])
 
@@ -37,7 +42,7 @@ async def list_sources(request: Request, session: AsyncSession = Depends(get_ses
     rows = (await session.execute(select(Source).order_by(Source.id))).scalars().all()
     return templates.TemplateResponse(
         request, "partials/sources_list.html",
-        {"sources": rows, "roots": settings.data_root_paths},
+        {"sources": rows, "roots": settings.data_root_paths, "health": _health_map(rows)},
     )
 
 
@@ -46,19 +51,39 @@ async def add_source(
     request: Request,
     name: str = Form(...),
     path: str = Form(...),
+    root_unc: str = Form(""),
     session: AsyncSession = Depends(get_session),
 ):
     p = _validate_path(path)
     exists = (await session.execute(select(Source).where(Source.path == str(p)))).scalar_one_or_none()
     if exists:
         raise HTTPException(400, "Такая папка уже добавлена")
-    src = Source(name=name or p.name, path=str(p))
+    src = Source(name=name or p.name, path=str(p), root_unc=share.normalize_unc(root_unc))
     session.add(src)
     await session.flush()
     rows = (await session.execute(select(Source).order_by(Source.id))).scalars().all()
     return templates.TemplateResponse(
         request, "partials/sources_list.html",
-        {"sources": rows, "roots": settings.data_root_paths},
+        {"sources": rows, "roots": settings.data_root_paths, "health": _health_map(rows)},
+    )
+
+
+@router.post("/{sid}/unc", response_class=HTMLResponse)
+async def set_root_unc(
+    sid: int,
+    request: Request,
+    root_unc: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+):
+    """Задать UNC-корень: без него клиент не сможет прочитать файлы для печати."""
+    src = await session.get(Source, sid)
+    if not src:
+        raise HTTPException(404)
+    src.root_unc = share.normalize_unc(root_unc)
+    rows = (await session.execute(select(Source).order_by(Source.id))).scalars().all()
+    return templates.TemplateResponse(
+        request, "partials/sources_list.html",
+        {"sources": rows, "roots": settings.data_root_paths, "health": _health_map(rows)},
     )
 
 
@@ -78,7 +103,7 @@ async def delete_source(sid: int, request: Request, session: AsyncSession = Depe
     rows = (await session.execute(select(Source).order_by(Source.id))).scalars().all()
     return templates.TemplateResponse(
         request, "partials/sources_list.html",
-        {"sources": rows, "roots": settings.data_root_paths},
+        {"sources": rows, "roots": settings.data_root_paths, "health": _health_map(rows)},
     )
 
 
@@ -156,7 +181,7 @@ async def scan_one(sid: int, request: Request, session: AsyncSession = Depends(g
     rows = (await session.execute(select(Source).order_by(Source.id))).scalars().all()
     return templates.TemplateResponse(
         request, "partials/sources_list.html",
-        {"sources": rows, "roots": settings.data_root_paths,
+        {"sources": rows, "roots": settings.data_root_paths, "health": _health_map(rows),
          "diff": _run_to_diff(run), "diff_src": src.name},
     )
 
@@ -170,6 +195,6 @@ async def scan_all(request: Request, session: AsyncSession = Depends(get_session
     rows = (await session.execute(select(Source).order_by(Source.id))).scalars().all()
     return templates.TemplateResponse(
         request, "partials/sources_list.html",
-        {"sources": rows, "roots": settings.data_root_paths,
+        {"sources": rows, "roots": settings.data_root_paths, "health": _health_map(rows),
          "diff": stats, "diff_src": "все источники"},
     )

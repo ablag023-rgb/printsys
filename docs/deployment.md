@@ -61,22 +61,96 @@ WEB_PORT=8000
 
 `HOST_DATA_DIR` — хостовая директория, которая маппится в `/data` внутри контейнера. Может быть локальной, сетевым шаром или подключённым SMB. Read-only.
 
-### 3. Bind-mount сетевых папок (пример)
+### 3. Подключение сетевой шары
 
-Если папки лежат на сетевом ресурсе, смонтируйте на хосте через `cifs` (Linux):
+Сервер сканирует шару, клиент читает те же файлы напрямую под учёткой оператора.
+Поэтому нужны **две вещи**: смонтированный путь на сервере и **UNC-путь** для клиента.
+
+#### Вариант А (рекомендуется) — монтирование на хосте
+
+Хост сам занимается переподключением при обрывах, это стандартная практика.
 
 ```bash
-sudo mkdir -p /mnt/network/ksr
-sudo mount -t cifs //srv-docs/ksr /mnt/network/ksr \
-    -o username=svc_ksr,password=***,ro,uid=1000,gid=1000,iocharset=utf8
+# Учётные данные — отдельным файлом, не в командной строке
+sudo tee /root/.smbcreds >/dev/null <<'EOF'
+username=svc_printsys
+password=<пароль>
+domain=CORP
+EOF
+sudo chmod 600 /root/.smbcreds
+
+sudo mkdir -p /mnt/ksr
+sudo mount -t cifs //srv-docs/ksr /mnt/ksr \
+    -o credentials=/root/.smbcreds,ro,uid=0,gid=0,iocharset=utf8,vers=3.0
 ```
 
-Persist через `/etc/fstab`:
+Постоянное монтирование через `/etc/fstab`:
 ```
-//srv-docs/ksr  /mnt/network/ksr  cifs  ro,credentials=/root/.smbcreds,uid=1000,gid=1000,iocharset=utf8  0  0
+//srv-docs/ksr  /mnt/ksr  cifs  ro,credentials=/root/.smbcreds,uid=0,gid=0,iocharset=utf8,vers=3.0,_netdev,x-systemd.automount  0  0
 ```
 
-Затем `HOST_DATA_DIR=/mnt/network/ksr` в `.env`.
+`_netdev` и `x-systemd.automount` важны: монтирование отложится до готовности сети
+и переподключится автоматически.
+
+Затем в `.env`:
+```env
+HOST_DATA_DIR=/mnt/ksr
+```
+
+#### Вариант Б — монтирование средствами Docker
+
+Раскомментируйте том `ksr_share` в `docker-compose.prod.yml` и строку
+`- ksr_share:/data/share:ro` в `web.volumes`, затем заполните `.env`:
+
+```env
+SMB_HOST=srv-docs
+SMB_SHARE=ksr
+SMB_USER=svc_printsys
+SMB_PASSWORD=<пароль>
+SMB_DOMAIN=CORP
+```
+
+Привилегированный контейнер не требуется — монтированием занимается Docker.
+Минус: переподключение после долгого обрыва иногда требует пересоздания тома.
+
+#### Обязательный шаг: указать UNC-путь
+
+После добавления источника в UI задайте поле **UNC** — путь, по которому ту же
+папку видит клиент оператора:
+
+```
+Путь внутри контейнера:  /data/share
+UNC-путь для клиента:    \\srv-docs\ksr
+```
+
+**Без UNC клиент не сможет прочитать файлы для печати** — в списке источников
+появится пометка «клиент печатать не сможет».
+
+Если у операторов папка подключена буквой (`Z:`), UNC всё равно работает —
+Windows открывает UNC-пути без монтирования.
+
+#### Проверка
+
+```bash
+curl http://localhost:8000/api/health
+```
+```json
+{"all_ok": true, "sources": [{"name": "Шара ТЭ", "state": "ok", "root_unc": "\\\\srv-docs\\ksr"}]}
+```
+
+Состояния источника: `ok` · `empty` (доступен, но пуст) · `missing` (пути нет) ·
+`denied` (нет прав) · `stale` (связь с шарой потеряна).
+
+В UI на вкладке «Источники» состояние показывается рядом с именем.
+
+#### Что происходит при обрыве связи с шарой
+
+- В `/api/health` источник получает `state: stale`, `all_ok: false`
+- Скан этого источника завершается с ошибкой и пишет её в журнал
+- **Остальные источники сканируются нормально**
+- **Дела недоступного источника НЕ помечаются потерянными** — скан прерывается
+  до пересборки дел. Массовая пометка `orphaned` при обрыве сети была бы
+  катастрофой, поэтому она возможна только при успешном обходе
 
 ### 4. Запуск
 

@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from . import logging_ring, scheduler
 from .config import settings
 from .db import get_session
+from .routes import api as api_router
 from .routes import cases as cases_router
 from .routes import logs as logs_router
 from .routes import settings_routes as settings_router
@@ -32,6 +33,7 @@ app.include_router(cases_router.router)
 app.include_router(sources_router.router)
 app.include_router(settings_router.router)
 app.include_router(logs_router.router)
+app.include_router(api_router.router)
 
 
 @app.get("/", response_class=HTMLResponse)

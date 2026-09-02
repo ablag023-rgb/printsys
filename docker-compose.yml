@@ -27,13 +27,26 @@ services:
       - "8001:8000"
     volumes:
       - .:/app
-      # Смонтировать реальные папки с документами (админ-режим, read-only):
+      # Демо-папка для локальной разработки (read-only):
       - ../Документы:/data/demo:ro
       # Writeable volume для папок, загруженных через UI:
       - uploads:/data/uploads
+      # Сетевая шара. Раскомментируйте и задайте переменные в .env — см. volumes ниже.
+      # - ksr_share:/data/share:ro
     command: >
       sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/app --reload-include='*.py' --reload-include='*.html'"
 
 volumes:
   pgdata:
   uploads:
+
+  # Сетевая шара через CIFS-драйвер Docker: монтирование объявлено здесь,
+  # привилегированный контейнер не нужен. Учётные данные — в .env (в git не попадает).
+  # Раскомментируйте вместе со строкой ksr_share в web.volumes.
+  #
+  # ksr_share:
+  #   driver: local
+  #   driver_opts:
+  #     type: cifs
+  #     device: "//${SMB_HOST:?SMB_HOST not set}/${SMB_SHARE:?SMB_SHARE not set}"
+  #     o: "username=${SMB_USER},password=${SMB_PASSWORD},domain=${SMB_DOMAIN:-},ro,uid=0,gid=0,iocharset=utf8,vers=3.0,noserverino"
