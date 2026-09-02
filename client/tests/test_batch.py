@@ -208,3 +208,19 @@ def test_failed_report_is_retried_later(q):
     assert flush_reports(api, q, be.printers[0]) == 1
     assert [r[0] for r in api.reported] == ["1"]
     assert q.unreported() == []
+
+
+def test_stop_between_cases_leaves_rest_in_queue(q):
+    """Остановка не рвёт дело на середине: текущее дописывается, остальные
+    остаются QUEUED и продолжаются через resume."""
+    api, be = FakeAPI(), FakeBackend()
+    printed = []
+
+    def stop_after_first():
+        return len(be.submitted) >= 1
+
+    res = print_batch(api, be, [case("1"), case("2"), case("3")], SETTINGS, queue=q,
+                      printer=be.printers[0], should_stop=stop_after_first)
+    assert len(be.submitted) == 1
+    assert res.paused and "оператор" in res.pause_reason
+    assert [j.ksr for j in q.pending(res.batch_id)] == ["2", "3"]

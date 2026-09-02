@@ -74,9 +74,16 @@ def print_batch(
     window: int = 3,
     allow_incomplete: bool = False,
     on_progress: Optional[Callable[[str, str], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
     report: bool = True,
 ) -> BatchResult:
-    """Напечатать пакет. `batch_id` — продолжить существующий пакет."""
+    """Напечатать пакет. `batch_id` — продолжить существующий пакет.
+
+    `should_stop` опрашивается МЕЖДУ делами, а не внутри задания: оборвать
+    дело на середине нельзя — в принтер уйдёт неполный пакет документов.
+    Остановленные дела остаются в очереди со статусом QUEUED, пакет
+    продолжается командой resume.
+    """
     slot_trays = slot_trays or {}
     by_ksr = {c.ksr: c for c in cases}
 
@@ -108,6 +115,10 @@ def print_batch(
         notify(ksr, f"ПАУЗА ПАКЕТА: {reason}")
 
     for job in queue.pending(batch_id):
+        if should_stop is not None and should_stop() and not result.paused:
+            result.paused = True
+            result.pause_reason = "остановлено оператором"
+            queue.pause(batch_id, result.pause_reason)
         if result.paused:
             result.items.append(ItemResult(job.ksr, JobState.QUEUED, message="пакет на паузе"))
             continue
