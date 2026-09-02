@@ -118,16 +118,23 @@ async def import_json(file: UploadFile = File(...), session: AsyncSession = Depe
 
 @router.post("/clear-cases", response_class=HTMLResponse)
 async def clear_cases(session: AsyncSession = Depends(get_session)):
+    from ..models import SourceObject
     await session.execute(PrintHistory.__table__.delete())
     await session.execute(Case.__table__.delete())
+    # Сбрасываем и индекс объектов: иначе при следующем скане ничего
+    # не «изменится» и дела не пересоберутся
+    await session.execute(SourceObject.__table__.delete())
     return HTMLResponse("", headers={"HX-Trigger": "cases-changed"})
 
 
 @router.post("/clear-all", response_class=HTMLResponse)
 async def clear_all(session: AsyncSession = Depends(get_session)):
-    from ..models import Source
+    from ..models import ParsedDoc, ScanRun, SourceObject, Storage
     await session.execute(PrintHistory.__table__.delete())
     await session.execute(Case.__table__.delete())
-    await session.execute(Source.__table__.delete())
+    await session.execute(SourceObject.__table__.delete())
+    await session.execute(ScanRun.__table__.delete())
+    await session.execute(ParsedDoc.__table__.delete())
+    await session.execute(Storage.__table__.delete())
     await settings_store.reset_all(session)
-    return HTMLResponse("", headers={"HX-Trigger": "cases-changed,settings-saved,sources-changed"})
+    return HTMLResponse("", headers={"HX-Trigger": "cases-changed,settings-saved,storages-changed"})

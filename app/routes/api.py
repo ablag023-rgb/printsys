@@ -1,44 +1,58 @@
 """JSON-API для Windows-клиента печати.
 
-Сервер отдаёт СПИСОК ПУТЕЙ, а не файлы: клиент читает документы с шары
-напрямую под учёткой оператора (SPEC §3.1).
+Документы доставляются ЧЕРЕЗ СЕРВЕР (SPEC §4.1): сервер тянет объект из S3
+и отдаёт потоком. Клиенту не нужен сетевой доступ к хранилищам, а аудит
+фиксирует факт скачивания, а не факт выдачи ссылки.
 """
 from __future__ import annotations
 
+import asyncio
+import logging
 from datetime import date
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .. import services, settings_store, share
+from .. import s3, services, settings_store
 from ..db import get_session
-from ..models import Case, PrintHistory, Source
+from ..models import Case, PrintHistory, SourceObject, Storage
+
+log = logging.getLogger("printsys.api")
 
 router = APIRouter(prefix="/api", tags=["api"])
 
+CT_BY_EXT = {
+    ".pdf": "application/pdf",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xls": "application/vnd.ms-excel",
+}
 
-def _case_payload(c: Case, slots_cfg: List[Dict[str, Any]], sources: Dict[int, Source]) -> Dict[str, Any]:
-    """Дело + файлы с UNC-путями в порядке слотов (порядок = порядок печати)."""
-    files: List[Dict[str, Any]] = []
-    unresolved = 0
+
+def _case_payload(c: Case, slots_cfg: List[Dict[str, Any]],
+                  storages: Dict[int, Storage]) -> Dict[str, Any]:
+    """Дело + документы в порядке слотов (порядок = порядок печати).
+
+    Отдаём не пути, а идентификаторы для скачивания через сервер.
+    """
+    docs: List[Dict[str, Any]] = []
     for order, s in enumerate(slots_cfg):
         for f in sorted(c.slots.get(s["id"], []), key=lambda x: x["name"]):
-            src = sources.get(f.get("source_id"))
-            rel = f.get("rel_path") or ""
-            unc = share.to_unc(src.root_unc, rel) if (src and rel) else None
-            if unc is None:
-                unresolved += 1
-            files.append({
+            st = storages.get(f.get("storage_id"))
+            docs.append({
                 "slot_id": s["id"],
                 "slot_name": s["name"],
                 "slot_order": order,
                 "name": f["name"],
-                "rel_path": rel,
-                "unc_path": unc,
-                "server_path": f.get("path"),
-                "source_id": f.get("source_id"),
+                "size": f.get("size"),
+                "etag": f.get("etag"),
+                "storage_id": f.get("storage_id"),
+                "storage_name": st.name if st else None,
+                # Клиент качает так: GET /api/documents/content?storage_id=..&key=..
+                "key": f.get("key"),
             })
     return {
         "ksr": c.ksr,
@@ -53,29 +67,19 @@ def _case_payload(c: Case, slots_cfg: List[Dict[str, Any]], sources: Dict[int, S
         "is_orphaned": c.is_orphaned,
         "printed_at": c.printed_at.isoformat() if c.printed_at else None,
         "submitted_at": c.submitted_at.isoformat() if c.submitted_at else None,
-        "files": files,
-        "files_unresolved": unresolved,
+        "documents": docs,
     }
 
 
-async def _load_sources(session: AsyncSession) -> Dict[int, Source]:
-    rows = (await session.execute(select(Source))).scalars().all()
+async def _load_storages(session: AsyncSession) -> Dict[int, Storage]:
+    rows = (await session.execute(select(Storage))).scalars().all()
     return {s.id: s for s in rows}
 
 
 @router.get("/settings")
 async def api_settings(session: AsyncSession = Depends(get_session)):
-    """Слоты, лейблы, подвал, титульник — клиент собирает PDF по этим правилам."""
+    """Слоты, лейблы, подвал, титульник — правила сборки PDF на клиенте."""
     return await settings_store.get_all(session)
-
-
-@router.get("/cases/{ksr}")
-async def api_case(ksr: str, session: AsyncSession = Depends(get_session)):
-    c = await session.get(Case, ksr)
-    if not c:
-        raise HTTPException(404, "case not found")
-    stg = await settings_store.get_all(session)
-    return _case_payload(c, stg["slots"], await _load_sources(session))
 
 
 @router.get("/cases")
@@ -84,10 +88,10 @@ async def api_cases(
     only_complete: bool = Query(False),
     session: AsyncSession = Depends(get_session),
 ):
-    """Пакет дел для печати: клиент получает пути и печатает по одному делу."""
+    """Пакет дел для печати с документами в порядке слотов."""
     stg = await settings_store.get_all(session)
     slots_cfg = stg["slots"]
-    sources = await _load_sources(session)
+    storages = await _load_storages(session)
 
     stmt = select(Case)
     wanted: List[str] = []
@@ -96,14 +100,64 @@ async def api_cases(
         stmt = stmt.where(Case.ksr.in_(wanted))
     rows = (await session.execute(stmt)).scalars().all()
 
-    if wanted:  # сохраняем порядок, заданный клиентом
+    if wanted:                       # сохраняем порядок, заданный клиентом
         by_ksr = {c.ksr: c for c in rows}
         rows = [by_ksr[k] for k in wanted if k in by_ksr]
 
-    payloads = [_case_payload(c, slots_cfg, sources) for c in rows]
+    payloads = [_case_payload(c, slots_cfg, storages) for c in rows]
     if only_complete:
         payloads = [p for p in payloads if p["is_complete"]]
     return {"count": len(payloads), "cases": payloads}
+
+
+@router.get("/cases/{ksr}")
+async def api_case(ksr: str, session: AsyncSession = Depends(get_session)):
+    c = await session.get(Case, ksr)
+    if not c:
+        raise HTTPException(404, "case not found")
+    stg = await settings_store.get_all(session)
+    return _case_payload(c, stg["slots"], await _load_storages(session))
+
+
+@router.get("/documents/content")
+async def api_document_content(
+    storage_id: int = Query(...),
+    key: str = Query(...),
+    session: AsyncSession = Depends(get_session),
+):
+    """Отдать содержимое документа потоком из S3.
+
+    Объект обязан присутствовать в индексе — иначе через этот эндпоинт
+    можно было бы вытащить произвольный ключ из бакета.
+    """
+    obj = (await session.execute(
+        select(SourceObject).where(
+            SourceObject.storage_id == storage_id,
+            SourceObject.key == key,
+        )
+    )).scalar_one_or_none()
+    if obj is None:
+        raise HTTPException(404, "документ не найден в индексе")
+
+    st = await session.get(Storage, storage_id)
+    if st is None:
+        raise HTTPException(404, "хранилище не найдено")
+
+    conn = services.to_conn(st)
+    ext = ("." + obj.name.rsplit(".", 1)[-1].lower()) if "." in obj.name else ""
+    media_type = CT_BY_EXT.get(ext, "application/octet-stream")
+
+    def _iter():
+        yield from s3.stream_object(conn, key)
+
+    log.info("выдан документ: storage=%s key=%s size=%s", st.name, key, obj.size)
+    # RFC 6266: не-ASCII имя только через filename*
+    disp = f"attachment; filename=\"document{ext}\"; filename*=UTF-8''{quote(obj.name, safe='')}"
+    return StreamingResponse(
+        _iter(),
+        media_type=media_type,
+        headers={"Content-Disposition": disp, "Content-Length": str(obj.size)},
+    )
 
 
 @router.post("/cases/{ksr}/printed")
@@ -118,23 +172,23 @@ async def api_mark_printed(
     if not c:
         raise HTTPException(404, "case not found")
     c.printed_at = date.today()
-    c.is_stale = False          # напечатали актуальную версию
+    c.is_stale = False               # напечатали актуальную версию
     session.add(PrintHistory(ksr=c.ksr, note=f"{printer} pages={pages}".strip()))
     return {"ok": True, "ksr": ksr, "printed_at": c.printed_at.isoformat()}
 
 
 @router.get("/health")
 async def api_health(session: AsyncSession = Depends(get_session)):
-    """Состояние источников — доступна ли шара прямо сейчас."""
-    sources = (await session.execute(select(Source).order_by(Source.id))).scalars().all()
+    """Состояние хранилищ прямо сейчас."""
+    rows = (await session.execute(select(Storage).order_by(Storage.id))).scalars().all()
     out = []
-    for s in sources:
-        h = share.check_path(s.path)
+    for st in rows:
+        h = await asyncio.to_thread(s3.check_storage, services.to_conn(st))
         out.append({
-            "id": s.id, "name": s.name, "path": s.path,
-            "root_unc": s.root_unc, "enabled": s.enabled,
-            "ok": h.ok, "state": h.state, "message": h.message,
-            "file_count": s.file_count,
-            "last_scan": s.last_scan.isoformat() if s.last_scan else None,
+            "id": st.id, "name": st.name,
+            "endpoint": st.endpoint_url, "bucket": st.bucket, "prefix": st.prefix,
+            "enabled": st.enabled, "ok": h.ok, "state": h.state, "message": h.message,
+            "object_count": st.object_count,
+            "last_ok_scan_at": st.last_ok_scan_at.isoformat() if st.last_ok_scan_at else None,
         })
-    return {"sources": out, "all_ok": all(x["ok"] for x in out) if out else True}
+    return {"storages": out, "all_ok": all(x["ok"] for x in out) if out else True}

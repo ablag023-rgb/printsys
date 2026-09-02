@@ -1,217 +1,209 @@
-"""Оркестрация инкрементального сканирования и построения дел.
+"""Индексация хранилищ S3 и сборка дел.
 
-Ключевая идея (SPEC §6): обход дерева дёшев и делается полностью каждый цикл —
-он гарантированно ничего не теряет. Дорог парсинг справки (47x против stat),
-поэтому он закрыт кешем по (size, mtime, parser_version).
+Ключевые свойства (SPEC §3):
+  - признак изменения объекта — (etag, size); LastModified не участвует
+  - парсинг справок кешируется по content_etag, а НЕ по ключу объекта:
+    переименование даёт новый ключ, но тот же ETag → парсинг бесплатен
+  - пометка пропавших выполняется ТОЛЬКО при полностью завершённом
+    листинге, иначе обрыв сети «потеряет» весь реестр
+  - дело собирается по КСР ПОВЕРХ всех хранилищ
 """
 from __future__ import annotations
 
+import asyncio
+import io
 import logging
 import time
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from . import scanner, settings_store
-from .models import Case, ScanRun, Source, SourceFile
+from . import s3, scanner, settings_store
+from .models import Case, ParsedDoc, ScanRun, SourceObject, Storage
 
 log = logging.getLogger("printsys.scan")
 
-LOCK_RETRY = 3
-LOCK_RETRY_DELAY = 0.25
-
 
 class ScanStats:
-    """Счётчики одного прогона — то, что оператор увидит в diff-панели."""
+    """Счётчики прогона — то, что оператор увидит после скана."""
 
     def __init__(self) -> None:
-        self.files_seen = 0
-        self.files_new = 0
-        self.files_changed = 0
-        self.files_renamed = 0
-        self.files_missing = 0
-        self.files_locked = 0
+        self.objects_seen = 0
+        self.objects_new = 0
+        self.objects_changed = 0
+        self.objects_missing = 0
+        self.parsed_count = 0
+        self.parse_cache_hits = 0
         self.cases_new = 0
         self.cases_updated = 0
         self.cases_orphaned = 0
-        self.parsed_count = 0
 
     def as_dict(self) -> Dict[str, int]:
-        return {k: v for k, v in self.__dict__.items()}
+        return dict(self.__dict__)
 
 
-def _parse_with_retry(path: Path, labels: Dict[str, List[str]]) -> Tuple[Optional[Dict[str, str]], bool]:
-    """Распарсить справку. Возвращает (meta, locked).
-
-    Файл, открытый в Excel, отдаёт ошибку доступа — это НЕ повод считать его
-    пропавшим (SPEC §6.1), поэтому такие помечаются pending_locked.
-    """
-    for attempt in range(LOCK_RETRY):
-        try:
-            meta = scanner.parse_spravka(path, labels)
-            if any(meta.values()):
-                return meta, False
-            # Пустой результат при читаемом файле — не блокировка, а нестандартный шаблон
-            return meta, False
-        except (PermissionError, OSError):
-            if attempt < LOCK_RETRY - 1:
-                time.sleep(LOCK_RETRY_DELAY * (attempt + 1))
-                continue
-            return None, True
-        except Exception:  # noqa: BLE001
-            return None, False
-    return None, True
+def to_conn(st: Storage) -> s3.StorageConn:
+    """ORM → отвязанные параметры подключения (чтобы работать вне сессии)."""
+    return s3.StorageConn(
+        id=st.id, name=st.name, endpoint_url=st.endpoint_url, region=st.region,
+        bucket=st.bucket, prefix=st.prefix or "",
+        access_key=st.access_key, secret_key=s3.decrypt_secret(st.secret_key_enc),
+        addressing_style=st.addressing_style, verify_ssl=st.verify_ssl,
+    )
 
 
-async def scan_source(session: AsyncSession, src: Source, trigger: str = "manual") -> ScanRun:
-    """Инкрементально отсканировать один источник и обновить дела.
+async def _parse_anchor(
+    session: AsyncSession, conn: s3.StorageConn, obj: s3.S3Object,
+    labels: Dict[str, List[str]], stats: ScanStats,
+) -> Optional[Dict[str, str]]:
+    """Распарсить справку с кешем по ETag содержимого."""
+    cached = await session.get(ParsedDoc, obj.etag)
+    if cached is not None and cached.parser_version == scanner.PARSER_VERSION:
+        stats.parse_cache_hits += 1
+        return cached.parsed_meta or {}
 
-    Возвращает завершённый ScanRun со статистикой.
-    """
+    try:
+        raw = await asyncio.to_thread(s3.get_object_bytes, conn, obj.key)
+        meta = scanner.parse_spravka_bytes(raw, labels)
+    except Exception as e:  # noqa: BLE001
+        log.warning("не удалось распарсить %s: %s", obj.key, e)
+        return None
+
+    if cached is None:
+        session.add(ParsedDoc(
+            content_etag=obj.etag, parser_version=scanner.PARSER_VERSION, parsed_meta=meta
+        ))
+    else:
+        cached.parser_version = scanner.PARSER_VERSION
+        cached.parsed_meta = meta
+        cached.parsed_at = datetime.utcnow()
+    stats.parsed_count += 1
+    return meta
+
+
+async def scan_storage(session: AsyncSession, st: Storage, trigger: str = "manual") -> ScanRun:
+    """Проиндексировать одно хранилище. Дела пересобираются отдельно."""
     t0 = time.perf_counter()
-    run = ScanRun(source_id=src.id, trigger=trigger, status="running")
+    run = ScanRun(storage_id=st.id, trigger=trigger, status="running")
     session.add(run)
-    await session.flush()          # нужен run.id как scan_id
+    await session.flush()
 
     stats = ScanStats()
+    completed = False
     try:
-        await _scan_source_inner(session, src, run.id, stats)
-        run.status = "ok"
+        completed = await _scan_storage_inner(session, st, run.id, stats)
+        run.status = "ok" if completed else "error"
+        if not completed:
+            run.error = "листинг не завершён — пометка пропавших пропущена"
     except Exception as e:  # noqa: BLE001
         run.status = "error"
         run.error = f"{type(e).__name__}: {e}"
-        log.exception("scan failed for source %s", src.id)
+        log.exception("скан хранилища %s упал", st.name)
 
     run.finished_at = datetime.utcnow()
     run.duration_ms = int((time.perf_counter() - t0) * 1000)
     for k, v in stats.as_dict().items():
         setattr(run, k, v)
 
-    src.last_scan = run.finished_at
-    src.file_count = stats.files_seen
+    if completed:
+        st.last_ok_scan_at = run.finished_at
+        st.object_count = stats.objects_seen
+
     log.info(
-        "scan source=%s trigger=%s: seen=%d new=%d changed=%d renamed=%d missing=%d "
-        "locked=%d parsed=%d cases(new=%d upd=%d orphan=%d) %dms",
-        src.name, trigger, stats.files_seen, stats.files_new, stats.files_changed,
-        stats.files_renamed, stats.files_missing, stats.files_locked, stats.parsed_count,
-        stats.cases_new, stats.cases_updated, stats.cases_orphaned, run.duration_ms,
+        "скан %s (%s): объектов=%d новых=%d изменено=%d пропало=%d "
+        "распарсено=%d из кеша=%d %dмс",
+        st.name, trigger, stats.objects_seen, stats.objects_new, stats.objects_changed,
+        stats.objects_missing, stats.parsed_count, stats.parse_cache_hits, run.duration_ms,
     )
     return run
 
 
-async def _scan_source_inner(session: AsyncSession, src: Source, scan_id: int, stats: ScanStats) -> None:
+async def _scan_storage_inner(
+    session: AsyncSession, st: Storage, scan_id: int, stats: ScanStats
+) -> bool:
+    """Возвращает True, если листинг дошёл до конца."""
     stg = await settings_store.get_all(session)
-    slots_cfg: List[Dict[str, Any]] = stg["slots"]
     labels_cfg: Dict[str, List[str]] = stg["labels"]
+    conn = to_conn(st)
 
-    root = Path(src.path)
-    if not root.exists():
-        raise FileNotFoundError(f"Папка не найдена внутри контейнера: {src.path}")
+    health = await asyncio.to_thread(s3.check_storage, conn)
+    st.health = health.state
+    st.health_error = "" if health.ok else health.message
+    if not health.ok:
+        raise RuntimeError(health.message)
 
-    # Кеш прошлого скана
+    objects, completed = await asyncio.to_thread(s3.list_objects, conn)
+
     rows = (await session.execute(
-        select(SourceFile).where(SourceFile.source_id == src.id)
+        select(SourceObject).where(SourceObject.storage_id == st.id)
     )).scalars().all()
-    by_path = {r.rel_path: r for r in rows}
-    by_key: Dict[str, SourceFile] = {}
-    for r in rows:
-        if r.file_key:
-            by_key.setdefault(r.file_key, r)
+    by_key = {r.key: r for r in rows}
 
-    # --- Слой 1: полный обход (дёшево, ничего не теряет) ---
-    for f in scanner.scandir_recursive(root):
-        stats.files_seen += 1
-        row = by_path.get(f.rel_path)
+    for obj in objects:
+        stats.objects_seen += 1
+        row = by_key.get(obj.key)
 
-        if row is not None:
-            unchanged = (
-                row.size == f.size
-                and row.mtime_ns == f.mtime_ns
-                and row.parser_version == scanner.PARSER_VERSION
-            )
-            if unchanged:
-                # --- Слой 2: парсинг пропущен, это и есть выигрыш ---
-                row.last_seen_scan_id = scan_id
-                if row.state == "missing":
-                    row.state = "ok"
-                continue
-            stats.files_changed += 1
-        else:
-            renamed = by_key.get(f.file_key)
-            if renamed is not None and renamed.last_seen_scan_id != scan_id:
-                # Переименование/перемещение: путь новый, файл тот же — не перепарсиваем
-                renamed.rel_path = f.rel_path
-                renamed.name = f.name
-                renamed.last_seen_scan_id = scan_id
-                renamed.state = "ok"
-                by_path[f.rel_path] = renamed
-                stats.files_renamed += 1
-                continue
-            row = SourceFile(source_id=src.id, rel_path=f.rel_path, name=f.name)
+        # Признак изменения — (etag, size). LastModified намеренно не участвует.
+        unchanged = row is not None and row.etag == obj.etag and row.size == obj.size
+        if unchanged:
+            row.last_seen_scan_id = scan_id
+            if row.state == "missing":
+                row.state = "ok"
+            continue
+
+        if row is None:
+            row = SourceObject(storage_id=st.id, key=obj.key, name=obj.name)
             session.add(row)
-            by_path[f.rel_path] = row
-            stats.files_new += 1
+            by_key[obj.key] = row
+            stats.objects_new += 1
+        else:
+            stats.objects_changed += 1
 
-        # Новый или изменившийся файл — обновляем метаданные и, если это справка, парсим
-        row.name = f.name
-        row.size = f.size
-        row.mtime_ns = f.mtime_ns
-        row.file_key = f.file_key
+        row.name = obj.name
+        row.size = obj.size
+        row.etag = obj.etag
+        row.last_modified = obj.last_modified
         row.last_seen_scan_id = scan_id
         row.state = "ok"
-        row.parser_version = scanner.PARSER_VERSION
+        row.is_anchor = scanner.is_spravka(obj.name)
+        row.ksr = (scanner.extract_ksr_from_spravka_name(obj.name) or "") if row.is_anchor else ""
 
-        if scanner.is_spravka(f.name):
-            ksr = scanner.extract_ksr_from_spravka_name(f.name)
-            row.ksr = ksr or ""
-            meta, locked = _parse_with_retry(Path(f.abs_path), labels_cfg)
-            if locked:
-                row.state = "pending_locked"
-                stats.files_locked += 1
-            else:
-                row.parsed_meta = meta
-                stats.parsed_count += 1
-        else:
-            row.ksr = ""
-            row.parsed_meta = None
+        if row.is_anchor and row.ksr:
+            await _parse_anchor(session, conn, obj, labels_cfg, stats)
 
-    # --- Пропавшие: не видели в этом скане ---
-    missing_rows = [r for r in by_path.values() if r.last_seen_scan_id != scan_id]
-    for r in missing_rows:
-        if r.state != "missing":
-            r.state = "missing"
-        stats.files_missing += 1
+    # Пропавшие — ТОЛЬКО при полностью завершённом листинге (SPEC §3.5)
+    if completed:
+        for r in by_key.values():
+            if r.last_seen_scan_id != scan_id and r.state != "missing":
+                r.state = "missing"
+                stats.objects_missing += 1
 
     await session.flush()
-    await _rebuild_cases(session, src, scan_id, slots_cfg, stats)
+    return completed
 
 
-async def _rebuild_cases(
-    session: AsyncSession,
-    src: Source,
-    scan_id: int,
-    slots_cfg: List[Dict[str, Any]],
-    stats: ScanStats,
-) -> None:
-    """Пересобрать дела этого источника из актуального кеша файлов."""
+async def rebuild_cases(session: AsyncSession, scan_id: int, stats: ScanStats,
+                        healthy_storage_ids: List[int]) -> None:
+    """Собрать дела по КСР поверх ВСЕХ хранилищ.
+
+    healthy_storage_ids — хранилища, чей листинг завершился успешно.
+    Только их объекты участвуют в пометке дел потерянными.
+    """
+    stg = await settings_store.get_all(session)
+    slots_cfg: List[Dict[str, Any]] = stg["slots"]
+
     live = (await session.execute(
-        select(SourceFile).where(
-            SourceFile.source_id == src.id,
-            SourceFile.state != "missing",
-        )
+        select(SourceObject).where(SourceObject.state != "missing")
     )).scalars().all()
 
-    # Якоря: справки с извлечённым КСР
-    anchors = {r.ksr: r for r in live if r.ksr and scanner.is_spravka(r.name)}
-    if not anchors:
-        return
-
-    existing = {
-        c.ksr: c for c in (await session.execute(select(Case))).scalars().all()
+    anchors = {r.ksr: r for r in live if r.is_anchor and r.ksr}
+    parsed = {
+        p.content_etag: p
+        for p in (await session.execute(select(ParsedDoc))).scalars().all()
     }
+    existing = {c.ksr: c for c in (await session.execute(select(Case))).scalars().all()}
 
     for ksr, anchor in anchors.items():
         related = [r for r in live if scanner.name_contains_ksr(r.name, ksr)]
@@ -223,13 +215,13 @@ async def _rebuild_cases(
             if not slot_id:
                 continue
             slots.setdefault(slot_id, []).append({
+                "storage_id": r.storage_id,
+                "key": r.key,
                 "name": r.name,
-                "rel_path": r.rel_path,
-                "path": str(Path(src.path) / r.rel_path),
-                "source_id": src.id,
-                "source_name": src.name,
+                "size": r.size,
+                "etag": r.etag,
             })
-            comp.append((slot_id, r.rel_path, r.size, r.mtime_ns))
+            comp.append((slot_id, r.storage_id, r.key, r.etag))
 
         new_hash = scanner.composition_hash(comp)
         case = existing.get(ksr)
@@ -241,11 +233,10 @@ async def _rebuild_cases(
             stats.cases_new += 1
         elif case.composition_hash != new_hash:
             stats.cases_updated += 1
-            # Состав изменился после печати — дело требует перепечати (SPEC §10)
             if case.printed_at:
-                case.is_stale = True
+                case.is_stale = True   # состав изменился после печати
 
-        meta = anchor.parsed_meta or {}
+        meta = (parsed.get(anchor.etag).parsed_meta if parsed.get(anchor.etag) else None) or {}
         case.date_formed = meta.get("date_formed", "") or ""
         case.account = meta.get("account", "") or ""
         case.period = meta.get("period", "") or ""
@@ -256,45 +247,59 @@ async def _rebuild_cases(
         case.last_seen_scan_id = scan_id
         case.is_orphaned = False
 
-    # Дела, чьи файлы полностью пропали — помечаем, но НЕ удаляем:
-    # факт печати и передачи в суд юридически значим (SPEC §6.1).
+    # Дела без якоря — потерянные. Запись НЕ удаляем: факт печати и передачи
+    # в суд юридически значим (SPEC §6.1).
     #
-    # Осторожно: скан ОДНОГО источника не должен трогать дела ДРУГИХ источников.
-    # Пока у Case нет source_id, принадлежность определяем по файлам в слотах:
-    # помечаем только дела, все файлы которых пришли из этого источника.
-    for ksr, case in existing.items():
-        if ksr in anchors or case.is_orphaned:
-            continue
-        files = [f for slot_files in (case.slots or {}).values() for f in slot_files]
-        if not files:
-            continue
-        if not all(f.get("source_id") == src.id for f in files):
-            continue          # дело принадлежит другому источнику — не наше дело
-        case.is_orphaned = True
-        stats.cases_orphaned += 1
+    # Помечаем ТОЛЬКО когда все включённые хранилища отсканированы успешно:
+    # при обрыве связи с одним из них якорь мог просто не попасть в листинг,
+    # и пометка «потеряло» бы часть реестра.
+    enabled = (await session.execute(
+        select(Storage).where(Storage.enabled.is_(True))
+    )).scalars().all()
+    all_healthy = bool(enabled) and len(healthy_storage_ids) == len(enabled)
+
+    if all_healthy:
+        for ksr, case in existing.items():
+            if ksr in anchors or case.is_orphaned:
+                continue
+            case.is_orphaned = True
+            stats.cases_orphaned += 1
 
 
 async def scan_all(session: AsyncSession, trigger: str = "manual") -> Dict[str, Any]:
-    """Отсканировать настроенную папку. Источник в системе один (SPEC §3.1)."""
+    """Проиндексировать все включённые хранилища и пересобрать дела."""
     total: Dict[str, Any] = {
-        "sources": 0, "files_seen": 0, "files_new": 0, "files_changed": 0,
-        "files_renamed": 0, "files_missing": 0, "files_locked": 0,
+        "storages": 0, "objects_seen": 0, "objects_new": 0, "objects_changed": 0,
+        "objects_missing": 0, "parsed_count": 0, "parse_cache_hits": 0,
         "cases_new": 0, "cases_updated": 0, "cases_orphaned": 0,
-        "parsed_count": 0, "duration_ms": 0, "errors": [],
+        "duration_ms": 0, "errors": [],
     }
-    sources = (await session.execute(
-        select(Source).where(Source.enabled.is_(True)).order_by(Source.id)
+    storages = (await session.execute(
+        select(Storage).where(Storage.enabled.is_(True)).order_by(Storage.id)
     )).scalars().all()
 
-    for src in sources:
-        run = await scan_source(session, src, trigger=trigger)
-        total["sources"] += 1
-        for k in ("files_seen", "files_new", "files_changed", "files_renamed",
-                  "files_missing", "files_locked", "cases_new", "cases_updated",
-                  "cases_orphaned", "parsed_count", "duration_ms"):
+    if not storages:
+        total["errors"].append("Не настроено ни одного хранилища")
+        return total
+
+    healthy: List[int] = []
+    for st in storages:
+        run = await scan_storage(session, st, trigger=trigger)
+        total["storages"] += 1
+        for k in ("objects_seen", "objects_new", "objects_changed", "objects_missing",
+                  "parsed_count", "parse_cache_hits", "duration_ms"):
             total[k] += getattr(run, k)
-        if run.status == "error":
-            total["errors"].append(f"{src.name}: {run.error}")
+        if run.status == "ok":
+            healthy.append(st.id)
+        else:
+            total["errors"].append(f"{st.name}: {run.error}")
+
+    stats = ScanStats()
+    await rebuild_cases(session, max((s.id for s in storages), default=0), stats, healthy)
+    for k in ("cases_new", "cases_updated", "cases_orphaned"):
+        total[k] += getattr(stats, k)
+
+    log.info("скан завершён: %s", {k: v for k, v in total.items() if k != "errors"})
     return total
 
 

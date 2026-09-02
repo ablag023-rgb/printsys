@@ -29,8 +29,8 @@
     <div class="header-actions">
       <a href="/settings/export" class="btn ghost">⬇ Экспорт</a>
       <button class="btn primary"
-              hx-post="/folder/scan"
-              hx-target="#folder-panel"
+              hx-post="/storages/scan"
+              hx-target="#storages-panel"
               hx-swap="innerHTML"
               hx-indicator="#scan-indicator"
               hx-on::after-request="htmx.trigger('body','cases-changed')"
@@ -53,9 +53,9 @@
 
 <!-- SETTINGS -->
 <div class="panel" data-panel="settings">
-  <div id="folder-panel"
-       hx-get="/folder"
-       hx-trigger="load, folder-changed from:body"
+  <div id="storages-panel"
+       hx-get="/storages"
+       hx-trigger="load, storages-changed from:body"
        hx-swap="innerHTML"></div>
   <div id="settings-panel"
        hx-get="/settings"

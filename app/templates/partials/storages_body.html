@@ -1,0 +1,118 @@
+{% if message %}
+  <div class="banner" style="background:var(--ok-soft);border-color:rgba(5,150,105,.25);color:#065F46">✓ {{ message }}</div>
+{% endif %}
+{% if error %}
+  <div class="banner err">⚠ {{ error }}</div>
+{% endif %}
+
+<div class="settings-section">
+  <h3>Хранилища документов</h3>
+  <div class="desc">
+    Документы лежат в S3. Сервер индексирует хранилища и собирает дела по коду КСР —
+    <b>дело может состоять из объектов разных хранилищ</b>. Клиент получает документы
+    через сервер, доступ к S3 с рабочих мест не нужен.
+  </div>
+
+  {% if storages %}
+    {% for s in storages %}
+      <div class="source-item" style="margin-bottom:8px">
+        <div class="source-icon">{% if s.health == 'ok' %}🗄{% else %}⚠{% endif %}</div>
+        <div class="source-body">
+          <div class="source-name">
+            {{ s.name }}
+            {% if s.health == 'ok' %}<span class="dot ok" style="margin-left:8px;font-weight:400">доступно</span>
+            {% elif s.health == 'auth_error' %}<span class="dot err" style="margin-left:8px;font-weight:400">нет доступа</span>
+            {% elif s.health == 'not_found' %}<span class="dot err" style="margin-left:8px;font-weight:400">бакет не найден</span>
+            {% elif s.health == 'unreachable' %}<span class="dot err" style="margin-left:8px;font-weight:400">недоступно</span>
+            {% else %}<span class="dot muted" style="margin-left:8px;font-weight:400">не проверялось</span>{% endif %}
+            {% if not s.enabled %}<span class="dup-warn">выключено</span>{% endif %}
+          </div>
+          <div class="source-path">
+            {{ s.endpoint_url }}/{{ s.bucket }}{% if s.prefix %}/{{ s.prefix }}{% endif %}
+          </div>
+          <div class="source-meta">
+            <span>{{ s.object_count or 0 }} объектов</span>
+            <span>{% if s.last_ok_scan_at %}Индексация: {{ s.last_ok_scan_at|fmt_date }}{% else %}Ещё не индексировалось{% endif %}</span>
+            <span>ключ: <code class="mono">{{ s.access_key or '—' }}</code></span>
+            {% if s.health_error %}<span style="color:var(--err)">{{ s.health_error }}</span>{% endif %}
+          </div>
+        </div>
+        <div class="source-actions">
+          <button class="btn" hx-post="/storages/{{ s.id }}/check"
+                  hx-target="#storages-panel" hx-swap="innerHTML">Проверить</button>
+          <button class="btn" hx-post="/storages/{{ s.id }}/toggle"
+                  hx-target="#storages-panel" hx-swap="innerHTML">
+            {% if s.enabled %}Выключить{% else %}Включить{% endif %}
+          </button>
+          <button class="icon-btn" title="Удалить"
+                  hx-delete="/storages/{{ s.id }}"
+                  hx-target="#storages-panel" hx-swap="innerHTML"
+                  hx-confirm="Удалить хранилище «{{ s.name }}»? Индекс его объектов будет удалён, дела останутся.">🗑</button>
+        </div>
+      </div>
+    {% endfor %}
+
+    <div style="margin-top:14px">
+      <button class="btn primary" hx-post="/storages/scan"
+              hx-target="#storages-panel" hx-swap="innerHTML"
+              hx-indicator="#idx-ind"
+              hx-on::after-request="htmx.trigger('body','cases-changed')">
+        <span id="idx-ind" class="htmx-indicator">⏳</span> Индексировать сейчас
+      </button>
+    </div>
+  {% else %}
+    <div class="banner">Хранилища не настроены. Добавьте первое ниже.</div>
+  {% endif %}
+</div>
+
+<div class="settings-section">
+  <h3>Добавить хранилище</h3>
+  <div class="desc">
+    Для локальной разработки поднято два MinIO:
+    <code class="mono">http://s3-billing:9000</code> / <code class="mono">ksr-spravki</code> (справки) и
+    <code class="mono">http://s3-docflow:9000</code> / <code class="mono">ksr-dokumenty</code> (документы).
+  </div>
+  <form hx-post="/storages/add" hx-target="#storages-panel" hx-swap="innerHTML">
+    <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap;margin-bottom:10px">
+      <div class="field" style="flex:1 1 180px">
+        <label>Название</label>
+        <input class="input" name="name" required placeholder="Биллинг">
+      </div>
+      <div class="field" style="flex:2 1 260px">
+        <label>Endpoint</label>
+        <input class="input" name="endpoint_url" required placeholder="http://s3-billing:9000"
+               style="font-family:var(--font-mono);font-size:12px">
+      </div>
+      <div class="field" style="flex:1 1 160px">
+        <label>Бакет</label>
+        <input class="input" name="bucket" required placeholder="ksr-spravki"
+               style="font-family:var(--font-mono);font-size:12px">
+      </div>
+      <div class="field" style="flex:1 1 140px">
+        <label>Префикс (необяз.)</label>
+        <input class="input" name="prefix" placeholder=""
+               style="font-family:var(--font-mono);font-size:12px">
+      </div>
+    </div>
+    <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
+      <div class="field" style="flex:1 1 180px">
+        <label>Ключ доступа</label>
+        <input class="input" name="access_key" placeholder="billing_key"
+               style="font-family:var(--font-mono);font-size:12px">
+      </div>
+      <div class="field" style="flex:1 1 180px">
+        <label>Секрет</label>
+        <input class="input" name="secret_key" type="password" placeholder="секрет">
+      </div>
+      <div class="field" style="flex:0 1 120px">
+        <label>Регион</label>
+        <input class="input" name="region" value="us-east-1">
+      </div>
+      <button class="btn primary" type="submit">Подключить</button>
+    </div>
+    <div class="desc" style="margin-top:10px">
+      Секрет хранится в базе зашифрованным и не отдаётся ни в UI, ни в API.
+      Подключение проверяется сразу при добавлении.
+    </div>
+  </form>
+</div>

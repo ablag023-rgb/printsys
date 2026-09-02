@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 import re
 from dataclasses import dataclass
@@ -27,67 +28,15 @@ class FoundFile:
     source_name: str
 
 
-@dataclass
-class ScannedFile:
-    """Файл, увиденный при обходе, вместе с метаданными из одного вызова scandir."""
-    rel_path: str
-    name: str
-    abs_path: str
-    size: int
-    mtime_ns: int
-    file_key: str      # инвариант при переименовании: st_ino, иначе (size|name)
-
-
-def scandir_recursive(root: Path) -> Iterator[ScannedFile]:
-    """Рекурсивный обход через os.scandir — метаданные приходят пачками.
-
-    Отдаёт файлы; lock-файлы Excel (~$...) отсекаются. Каталоги, недоступные
-    по правам, пропускаются молча (вызывающий фиксирует это отдельно).
-    """
-    root_str = str(root)
-    stack = [root_str]
-    while stack:
-        current = stack.pop()
-        try:
-            with os.scandir(current) as it:
-                for entry in it:
-                    try:
-                        if entry.is_dir(follow_symlinks=False):
-                            stack.append(entry.path)
-                            continue
-                        if not entry.is_file(follow_symlinks=False):
-                            continue
-                    except OSError:
-                        continue
-                    if LOCK_RE.match(entry.name):
-                        continue
-                    try:
-                        st = entry.stat(follow_symlinks=False)
-                    except OSError:
-                        continue
-                    rel = os.path.relpath(entry.path, root_str).replace("\\", "/")
-                    ino = getattr(st, "st_ino", 0)
-                    key = str(ino) if ino else f"{st.st_size}|{entry.name}"
-                    yield ScannedFile(
-                        rel_path=rel,
-                        name=entry.name,
-                        abs_path=entry.path,
-                        size=st.st_size,
-                        mtime_ns=st.st_mtime_ns,
-                        file_key=key,
-                    )
-        except (PermissionError, OSError):
-            continue
-
-
 def composition_hash(entries: List[tuple]) -> str:
-    """Хэш состава дела: [(slot_id, rel_path, size, mtime_ns), ...].
+    """Хэш состава дела: [(slot_id, storage_id, key, etag), ...].
 
-    Меняется — значит дело надо пересобрать (и, если оно уже печаталось, пометить STALE).
+    Меняется — дело пересобрать; если оно уже печаталось, пометить STALE.
+    ETag выступает маркером версии содержимого (SPEC §3.1).
     """
     h = hashlib.blake2b(digest_size=16)
-    for slot_id, rel_path, size, mtime_ns in sorted(entries):
-        h.update(f"{slot_id}\x00{rel_path}\x00{size}\x00{mtime_ns}\x00".encode("utf-8"))
+    for slot_id, storage_id, key, etag in sorted(entries, key=lambda x: (x[0], x[1], x[2])):
+        h.update(f"{slot_id}\x00{storage_id}\x00{key}\x00{etag}\x00".encode("utf-8"))
     return h.hexdigest()
 
 
@@ -119,6 +68,46 @@ def walk_dir(root: Path) -> Iterable[Path]:
     for p in root.rglob("*"):
         if p.is_file() and not LOCK_RE.match(p.name):
             yield p
+
+
+def _read_cells_from_bytes(raw: bytes) -> List[tuple]:
+    """Прочитать ячейки первого листа из байтов xlsx.
+
+    Объект приходит из S3 в память (справки ~200-500 КБ), на диск не пишем.
+    """
+    cells: List[tuple] = []
+    try:
+        from python_calamine import CalamineWorkbook
+
+        wb = CalamineWorkbook.from_filelike(io.BytesIO(raw))
+        rows = wb.get_sheet_by_index(0).to_python()
+        for r_idx, row in enumerate(rows):
+            for c_idx, v in enumerate(row):
+                if v is None or (isinstance(v, str) and not v.strip()):
+                    continue
+                cells.append((r_idx, c_idx, v))
+        return cells
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        wb = load_workbook(io.BytesIO(raw), data_only=True, read_only=True)
+        sheet = wb.active
+        for r_idx, row in enumerate(sheet.iter_rows(values_only=False)):
+            for c_idx, cell in enumerate(row):
+                v = cell.value
+                if v is None or (isinstance(v, str) and not v.strip()):
+                    continue
+                cells.append((r_idx, c_idx, v))
+        wb.close()
+    except Exception:  # noqa: BLE001
+        return []
+    return cells
+
+
+def parse_spravka_bytes(raw: bytes, labels: Dict[str, List[str]]) -> Dict[str, str]:
+    """Извлечь метаданные справки из байтов объекта S3."""
+    return _extract_meta(_read_cells_from_bytes(raw), labels)
 
 
 def _read_cells(xlsx_path: Path) -> List[tuple]:
@@ -159,9 +148,13 @@ def _read_cells(xlsx_path: Path) -> List[tuple]:
 
 
 def parse_spravka(xlsx_path: Path, labels: Dict[str, List[str]]) -> Dict[str, str]:
-    """Извлечь метаданные из xlsx-справки по конфигу лейблов."""
+    """Извлечь метаданные из xlsx-справки на диске (используется в тестах)."""
+    return _extract_meta(_read_cells(xlsx_path), labels)
+
+
+def _extract_meta(cells: List[tuple], labels: Dict[str, List[str]]) -> Dict[str, str]:
+    """Найти значения по лейблам среди ячеек."""
     meta = {"date_formed": "", "account": "", "period": "", "provider": "", "service": ""}
-    cells = _read_cells(xlsx_path)
     if not cells:
         return meta
 
