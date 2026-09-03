@@ -37,10 +37,12 @@ a = Analysis(["printsys_client/standalone_main.py"], pathex=[".."], binaries=[],
              datas=DATAS, hiddenimports=HIDDEN, hookspath=[], runtime_hooks=[],
              excludes=EXCLUDES, noarchive=False)
 
-# console=True намеренно: тестовая сборка, и видеть ход запуска сервера
-# и ошибки на месте важнее, чем чистый вид
+# console=False: чёрное окно консоли рядом с окном оператора выглядит как
+# сбой и закрывается вместе с программой. Смотреть в него больше незачем —
+# ход запуска виден на заставке, а полный журнал пишется в файл и доступен
+# во вкладке «Логи» самого клиента (см. logsetup)
 exe = EXE(PYZ(a.pure), a.scripts, [], exclude_binaries=True,
-          name="printsys-автономный", console=True, upx=False,
+          name="printsys-автономный", console=False, upx=False,
           disable_windowed_traceback=False)
 
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False,

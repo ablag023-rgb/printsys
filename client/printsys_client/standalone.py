@@ -178,6 +178,10 @@ def start_server(on_status=None) -> str:
         app, host="127.0.0.1", port=port, log_level="warning",
         # Свой обработчик сигналов ломает поток: сервер живёт внутри окна
         access_log=False,
+        # log_config=None — не даём uvicorn ставить свои обработчики на
+        # стандартный вывод: в оконной сборке его нет, а записи должны идти
+        # в общий файл журнала вместе с остальными
+        log_config=None,
     ))
     threading.Thread(target=server.run, name="printsys-standalone",
                      daemon=True).start()
