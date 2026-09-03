@@ -1,3 +1,69 @@
+<!-- РАБОЧЕЕ МЕСТО. Видно только внутри клиента печати: настройки принадлежат
+     машине оператора, а не серверу, и хранятся у него в профиле. -->
+<div class="settings-section client-only-block" id="client-settings">
+  <h3>Рабочее место (печать)</h3>
+  <div class="desc">Эти настройки хранятся на вашем компьютере, а не на сервере:
+    у каждого оператора свой принтер и свои лотки.</div>
+  <div class="setting-row">
+    <div class="label">Принтер</div>
+    <select class="select" id="client-printer" style="width:340px"></select>
+  </div>
+  <div class="setting-row">
+    <div class="label">Копий</div>
+    <input class="input" id="client-copies" type="number" min="1" max="20" value="1" style="width:90px">
+  </div>
+  <div class="setting-row">
+    <div class="label">Стороны</div>
+    <select class="select" id="client-duplex" style="width:340px">
+      <option value="1">односторонняя</option>
+      <option value="2">двусторонняя, по длинной стороне</option>
+      <option value="3">двусторонняя, по короткой стороне</option>
+    </select>
+  </div>
+  <div class="setting-row">
+    <div class="label">Качество
+      <div class="desc">Обычное — растр 300 точек на дюйм, быстро. Максимальное —
+        векторная отрисовка: резче на бумаге, но на порядок дольше
+        (проверено: 80 с против 3 с на деле в 18 листов).</div>
+    </div>
+    <select class="select" id="client-quality" style="width:340px">
+      <option value="normal">обычное (быстро)</option>
+      <option value="max">максимальное (медленно)</option>
+    </select>
+  </div>
+  <div class="setting-row">
+    <div class="label">Заданий в спулере
+      <div class="desc">Меньше — меньше потеряется при замятии, больше — принтер реже простаивает.</div>
+    </div>
+    <input class="input" id="client-window" type="number" min="1" max="10" value="3" style="width:90px">
+  </div>
+
+  <h3 style="margin-top:18px">Лотки по слотам</h3>
+  <div class="desc">Пусто — лоток по умолчанию у принтера. Номера зависят от драйвера;
+    если не уверены, оставьте пусто.</div>
+  {% for s in stg.slots %}
+  <div class="setting-row">
+    <div class="label">{{ s.name }}</div>
+    <input class="input client-tray" data-slot="{{ s.id }}" type="text" inputmode="numeric"
+           style="width:90px" placeholder="—">
+  </div>
+  {% endfor %}
+
+  <div class="setting-row">
+    <div class="label"><span id="client-saved" class="saved-note">Сохранено</span></div>
+    <button class="btn primary" onclick="saveClientSettings()">Сохранить настройки печати</button>
+  </div>
+
+  <h3 style="margin-top:18px">Готовые PDF</h3>
+  <div class="desc">Справки конвертируются через Excel один раз и хранятся на
+    вашем компьютере. Повторная печать того же дела идёт без ожидания.
+    Ключ — содержимое файла: переименование кеш не сбрасывает, изменение — сбрасывает.</div>
+  <div class="setting-row">
+    <div class="label">Занято на диске: <span id="client-cache">—</span></div>
+    <button class="btn" onclick="clearPdfCache()">Очистить</button>
+  </div>
+</div>
+
 <div class="settings-section">
   <h3>Слоты документов</h3>
   <div class="desc">Порядок = очерёдность листов в PDF дела. Перетаскивайте <span class="drag-handle" style="cursor:default">≡</span>. Маска — подстрока (case-insensitive) или <code class="mono">/regex/</code>.</div>

@@ -109,6 +109,8 @@
     <pre id="pp-log" class="modal-log"></pre>
     <div class="modal-foot">
       <button class="btn" id="pp-stop" onclick="stopPrint()">Остановить</button>
+      <button class="btn" id="pp-queue" style="display:none"
+              onclick="closeProgress();openQueue()">Открыть очередь</button>
       <button class="btn primary" id="pp-close" onclick="closeProgress()">Закрыть</button>
     </div>
   </div>
@@ -120,6 +122,7 @@
     <div id="queue-box" class="modal-body"></div>
     <div class="modal-foot">
       <button class="btn" onclick="purgeQueue()">Убрать старые записи</button>
+      <button class="btn" onclick="cancelQueue()">Отменить незавершённые</button>
       <button class="btn" id="q-resume" onclick="closeQueue();resumeBatch()">Продолжить пакет</button>
       <button class="btn primary" onclick="closeQueue()">Закрыть</button>
     </div>

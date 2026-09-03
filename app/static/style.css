@@ -183,6 +183,9 @@ code.mono{font-family:var(--font-mono);background:var(--surface-2);padding:2px 6
    Класс in-client ставит client.js, когда страница открыта внутри клиента. */
 .client-only { display: none !important; }
 body.in-client .client-only { display: inline-flex !important; }
+/* Блочные элементы (секция настроек) — иначе inline-flex ломает вёрстку */
+.client-only-block { display: none !important; }
+body.in-client .client-only-block { display: block !important; }
 body.in-client .modal.client-only { display: none !important; }
 body.in-client .modal.client-only.show { display: flex !important; }
 
@@ -226,3 +229,7 @@ table.mini tr.row-bad td { color: var(--err); }
 table.mini tr.row-done td { color: var(--text-muted); }
 .btn.tiny { padding: 2px 8px; font-size: 12px; }
 .warn { color: var(--warn); }
+
+/* Уведомление «Сохранено» в настройках рабочего места */
+.saved-note { opacity: 0; color: var(--ok); font-size: 12px; transition: opacity .2s; }
+.saved-note.show { opacity: 1; }

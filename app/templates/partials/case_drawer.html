@@ -33,7 +33,13 @@
             <div class="slot-name">{{ s.name }}{% if files|length > 1 %}<span class="dup-warn">{{ files|length }} файла</span>{% endif %}</div>
             {% for f in files %}
               <div style="display:flex;align-items:center;gap:6px;margin-top:2px">
-                <div class="slot-file" title="{{ f.path }}" style="flex:1">{{ f.name }}</div>
+                <div class="slot-file" title="{{ f.key }}" style="flex:1">{{ f.name }}</div>
+                {# Открыть и напечатать отдельный документ может только клиент #}
+                <button class="icon-btn sm client-only" title="Открыть документ"
+                        onclick='openDocument({{ f.storage_id }}, {{ f.key|tojson }}, {{ f.name|tojson }})'>👁</button>
+                <button class="icon-btn sm client-only"
+                        title="Напечатать только этот документ (без сквозной нумерации)"
+                        onclick='printDocument({{ f.storage_id }}, {{ f.key|tojson }}, {{ f.name|tojson }}, {{ (f.etag or "")|tojson }})'>🖨</button>
               </div>
             {% endfor %}
           </div>

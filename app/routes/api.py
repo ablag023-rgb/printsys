@@ -14,6 +14,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -82,21 +83,15 @@ async def api_settings(session: AsyncSession = Depends(get_session)):
     return await settings_store.get_all(session)
 
 
-@router.get("/cases")
-async def api_cases(
-    ksrs: str = Query("", description="csv список КСР; пусто — все"),
-    only_complete: bool = Query(False),
-    session: AsyncSession = Depends(get_session),
-):
-    """Пакет дел для печати с документами в порядке слотов."""
+async def _cases_payload(session: AsyncSession, wanted: List[str],
+                         only_complete: bool) -> dict:
+    """Общее тело для GET и POST: расхождения между ними недопустимы."""
     stg = await settings_store.get_all(session)
     slots_cfg = stg["slots"]
     storages = await _load_storages(session)
 
     stmt = select(Case)
-    wanted: List[str] = []
-    if ksrs.strip():
-        wanted = [k.strip() for k in ksrs.split(",") if k.strip()]
+    if wanted:
         stmt = stmt.where(Case.ksr.in_(wanted))
     rows = (await session.execute(stmt)).scalars().all()
 
@@ -108,6 +103,36 @@ async def api_cases(
     if only_complete:
         payloads = [p for p in payloads if p["is_complete"]]
     return {"count": len(payloads), "cases": payloads}
+
+
+@router.get("/cases")
+async def api_cases(
+    ksrs: str = Query("", description="csv список КСР; пусто — все"),
+    only_complete: bool = Query(False),
+    session: AsyncSession = Depends(get_session),
+):
+    """Пакет дел для печати с документами в порядке слотов."""
+    wanted = [k.strip() for k in ksrs.split(",") if k.strip()] if ksrs.strip() else []
+    return await _cases_payload(session, wanted, only_complete)
+
+
+class CasesQuery(BaseModel):
+    ksrs: List[str] = []
+    only_complete: bool = False
+
+
+@router.post("/cases/query")
+async def api_cases_query(
+    q: CasesQuery,
+    session: AsyncSession = Depends(get_session),
+):
+    """То же, что GET /api/cases, но список КСР идёт телом запроса.
+
+    Пакет из сотен дел не помещается в query-строку: прокси и сервер режут
+    длинный URL (414), и печать пакета не начиналась с невнятной ошибкой.
+    """
+    wanted = [str(k).strip() for k in q.ksrs if str(k).strip()]
+    return await _cases_payload(session, wanted, q.only_complete)
 
 
 @router.get("/cases/{ksr}")

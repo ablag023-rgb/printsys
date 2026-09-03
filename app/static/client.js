@@ -20,12 +20,18 @@
 
   function onClientReady() {
     api = window.pywebview.api;
+    // Признак клиента ставим сразу: если мост ответит ошибкой, кнопки печати
+    // должны остаться видимыми, а оператор — увидеть причину, а не пустой экран
+    document.body.classList.add('in-client');
     api.hello().then((info) => {
-      document.body.classList.add('in-client');
       window.__printsysClient = info;
       fillPrinters(info);
       refreshQueueBadge();
-    }).catch((e) => console.warn('клиент не ответил:', e));
+    }).catch((e) => {
+      console.warn('клиент не ответил:', e);
+      alert('Не удалось получить сведения о рабочем месте:\n' + e +
+            '\nПечать может быть недоступна.');
+    });
   }
 
   if (window.pywebview && window.pywebview.api) {
@@ -71,6 +77,8 @@
 
   function openProgress(total) {
     el('print-progress').classList.add('show');
+    var qb = el('pp-queue');
+    if (qb) qb.style.display = 'none';
     el('pp-total').textContent = total || '?';
     el('pp-done').textContent = '0';
     el('pp-log').textContent = '';
@@ -90,9 +98,11 @@
     shownLines = 0;
     clearInterval(pollTimer);
     pollTimer = setInterval(() => {
-      api.print_status().then((st) => {
-        for (let i = shownLines; i < st.lines.length; i++) addLine(st.lines[i]);
-        shownLines = st.lines.length;
+      // Курсор, а не абсолютный индекс: Python отдаёт строки начиная с него,
+      // иначе журнал замолкал после первых двух сотен строк
+      api.print_status(shownLines).then((st) => {
+        (st.lines || []).forEach(addLine);
+        shownLines = st.next != null ? st.next : shownLines + (st.lines || []).length;
         el('pp-done').textContent = st.done;
         if (st.total) el('pp-total').textContent = st.total;
         if (!st.running) { reportSummary(st.summary); finishProgress(); }
@@ -105,6 +115,14 @@
     addLine('');
     addLine('Передано на принтер: ' + (s.done || 0));
     (s.failed || []).forEach((f) => addLine('  ! ' + f.ksr + ': ' + f.message));
+    var needQueue = (s.ambiguous || []).length > 0;
+    (s.already_queued || []).forEach((a) => {
+      addLine('  = ' + a.ksr + ': ' + (a.reason || 'пропущено'));
+      if (a.state === 'AMBIGUOUS') needQueue = true;
+    });
+    // Кнопка появляется ровно тогда, когда без очереди дальше не пройти
+    var qb = el('pp-queue');
+    if (qb) qb.style.display = needQueue ? '' : 'none';
     if ((s.ambiguous || []).length) {
       addLine('Требуют решения оператора: ' + s.ambiguous.join(', ') +
               ' — откройте «Очередь печати»');
@@ -157,6 +175,29 @@
     });
   };
 
+  // ============== отдельный документ ==============
+
+  window.openDocument = function (storageId, key, name) {
+    if (!api) return;
+    api.open_document(storageId, key, name).then((r) => {
+      if (!r.ok) alert('Не удалось открыть документ: ' + r.error);
+    });
+  };
+
+  window.printDocument = function (storageId, key, name, etag) {
+    if (!api) return;
+    const info = window.__printsysClient || {};
+    const printer = (info.settings || {}).printer || '(по умолчанию)';
+    if (!confirm('Напечатать отдельный документ?\n' + name +
+                 '\nПринтер: ' + printer +
+                 '\n\nСквозная нумерация КСР/NN не наносится — это допечатка ' +
+                 'вне сшитого пакета, и статус дела не изменится.')) return;
+    api.print_document(storageId, key, name, etag || '').then((r) => {
+      alert(r.ok ? ('Отправлено на принтер: ' + r.pages + ' л.')
+                 : ('Не удалось напечатать: ' + r.error));
+    });
+  };
+
   // ============== очередь печати ==============
 
   window.openQueue = function () {
@@ -181,15 +222,23 @@
               '<th>Листов</th><th>Отчёт</th><th>Пояснение</th><th></th>' +
               '</tr></thead><tbody>';
       r.jobs.forEach((j) => {
-        const amb = j.state === 'AMBIGUOUS';
+        // Кнопки нужны не только «требует решения»: задание могло остаться
+        // «отправляется»/«в очереди принтера» после сбоя внутри печати. Такие
+        // строки восстановление не разбирает (владелец — живой процесс), и без
+        // ручного выхода дело блокировало повторную печать до перезапуска.
+        // Окно очереди открывается только когда печать не идёт, так что живое
+        // задание сюда не попадёт.
+        const amb = ['AMBIGUOUS', 'SENDING', 'SPOOLED'].indexOf(j.state) >= 0;
         html += '<tr class="' + stateClass(j.state) + '"><td>' + esc(j.ksr) + '</td><td>' +
                 esc(stateLabel(j.state)) + '</td><td>' + j.pages + '</td><td>' +
                 (j.reported ? 'да' : 'нет') + '</td><td>' + esc(j.message || '') + '</td><td>';
         if (amb) {
-          html += '<button class="btn tiny" onclick="resolveJob(\'' + esc(j.ksr) +
-                  '\',\'reprint\')">Печатать заново</button> ' +
-                  '<button class="btn tiny" onclick="resolveJob(\'' + esc(j.ksr) +
-                  '\',\'skip\')">Считать напечатанным</button>';
+          // Адресуемся по id ЗАДАНИЯ: одно дело может иметь строки в разных
+          // пакетах, и решение по одной не должно поднимать чужую
+          html += '<button class="btn tiny" onclick="resolveJob(' + j.id +
+                  ',\'' + esc(j.ksr) + '\',\'reprint\')">Печатать заново</button> ' +
+                  '<button class="btn tiny" onclick="resolveJob(' + j.id +
+                  ',\'' + esc(j.ksr) + '\',\'skip\')">Считать напечатанным</button>';
         }
         html += '</td></tr>';
       });
@@ -210,12 +259,22 @@
     return '';
   }
 
-  window.resolveJob = function (ksr, action) {
+  window.resolveJob = function (jobId, ksr, action) {
     const msg = action === 'reprint'
       ? 'Дело ' + ksr + ' будет напечатано заново.\nВ лотке уже может лежать копия. Продолжить?'
       : 'Дело ' + ksr + ' будет помечено напечатанным без печати.\nУбедитесь, что бумага вышла. Продолжить?';
     if (!confirm(msg)) return;
-    api.queue_resolve(ksr, action).then(loadQueue);
+    api.queue_resolve(jobId, action).then(loadQueue);
+  };
+
+  window.cancelQueue = function () {
+    if (!api) return;
+    if (!confirm('Снять с печати все неотправленные дела?\nУже отправленные ' +
+                 'в принтер не отменятся — они у него в очереди.')) return;
+    api.queue_cancel('').then((r) => {
+      if (!r.ok) { alert(r.error); return; }
+      loadQueue();
+    });
   };
 
   window.purgeQueue = function () {
@@ -239,6 +298,17 @@
 
   // ============== настройки рабочего места ==============
 
+  // Вкладка настроек приезжает по HTMX уже после запуска client.js, поэтому
+  // заполняем поля ещё и после каждой подстановки разметки
+  document.body.addEventListener('htmx:afterSwap', () => {
+    // Заполняем ТОЛЬКО пустой список: обновление таблицы дел приходит тем же
+    // событием и раньше сбрасывало несохранённый выбор принтера и лотков
+    const sel = el('client-printer');
+    if (api && window.__printsysClient && sel && !sel.options.length) {
+      fillPrinters(window.__printsysClient);
+    }
+  });
+
   function fillPrinters(info) {
     const sel = el('client-printer');
     if (!sel) return;
@@ -253,18 +323,52 @@
     if (el('client-copies')) el('client-copies').value = s.copies || 1;
     if (el('client-duplex')) el('client-duplex').value = s.duplex || 1;
     if (el('client-window')) el('client-window').value = s.print_window || 3;
+    if (el('client-quality')) el('client-quality').value = s.print_quality || 'normal';
+    showCache(info.cache);
+    const trays = s.slot_trays || {};
+    document.querySelectorAll('.client-tray').forEach((inp) => {
+      inp.value = trays[inp.dataset.slot] != null ? trays[inp.dataset.slot] : '';
+    });
   }
+
+  function showCache(c) {
+    const n = el('client-cache');
+    if (n && c) n.textContent = c.files + ' док., ' + c.mb + ' МБ';
+  }
+
+  window.clearPdfCache = function () {
+    if (!api) return;
+    if (!confirm('Удалить готовые PDF?\nСледующая печать снова потратит время ' +
+                 'на конвертацию через Excel.')) return;
+    api.cache_clear().then(() => api.cache_info()).then((c) => {
+      if (window.__printsysClient) window.__printsysClient.cache = c;
+      showCache(c);
+    });
+  };
 
   window.saveClientSettings = function () {
     if (!api) return;
-    api.save_settings({
+    const trays = {};
+    let bad = null;
+    document.querySelectorAll('.client-tray').forEach((inp) => {
+      const v = inp.value.trim();
+      if (!v) return;
+      if (!/^\d+$/.test(v)) { bad = v; return; }
+      trays[inp.dataset.slot] = parseInt(v, 10);
+    });
+    if (bad !== null) { alert('Номер лотка должен быть числом: «' + bad + '»'); return; }
+    const data = {
       printer: el('client-printer').value,
       copies: parseInt(el('client-copies').value, 10),
       duplex: parseInt(el('client-duplex').value, 10),
       print_window: parseInt(el('client-window').value, 10),
-      slot_trays: (window.__printsysClient.settings || {}).slot_trays || {},
-    }).then(() => {
-      window.__printsysClient.settings.printer = el('client-printer').value;
+      print_quality: el('client-quality') ? el('client-quality').value : 'normal',
+      slot_trays: trays,
+    };
+    api.save_settings(data).then((r) => {
+      if (!r.ok) { alert('Не удалось сохранить: ' + (r.error || '')); return; }
+      window.__printsysClient.settings = Object.assign(
+        window.__printsysClient.settings || {}, data);
       const n = el('client-saved');
       if (n) { n.classList.add('show'); setTimeout(() => n.classList.remove('show'), 2000); }
     });
