@@ -26,12 +26,13 @@
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from .config import app_dir
 from .printing import JobState
@@ -39,9 +40,23 @@ from .printing import JobState
 log = logging.getLogger("printsys.queue")
 
 DB_NAME = "queue.db"
+# Сколько ждать освобождения базы: очередь пишут два потока (печать и
+# интерфейс), и отказ по занятости стоил бы потерянного состояния задания
+BUSY_TIMEOUT_SEC = 30.0
 
 # Состояния, из которых дело больше не берут в работу
 TERMINAL = (JobState.SENT.value, JobState.FAILED.value, "CANCELLED", "SKIPPED")
+
+# Состояния, в которых дело считается «уже в печати». Повторно поставить его
+# нельзя ни из другого пакета, ни из второго окна клиента: это была бы вторая
+# копия на десятки листов. AMBIGUOUS сюда входит намеренно: судьба задания не
+# решена, и печатать его в новом пакете — значит получить вторую копию, если
+# первая всё-таки вышла.
+ACTIVE = (JobState.QUEUED.value, JobState.SENDING.value, JobState.SPOOLED.value,
+          JobState.AMBIGUOUS.value)
+
+# Состояния, в которых у задания есть живой хозяин-процесс
+ACTIVE_OWNED = (JobState.SENDING.value, JobState.SPOOLED.value)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -57,6 +72,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     pages       INTEGER NOT NULL DEFAULT 0,
     attempts    INTEGER NOT NULL DEFAULT 0,
     reported    INTEGER NOT NULL DEFAULT 0,   -- отчитались ли серверу
+    owner_pid   INTEGER NOT NULL DEFAULT 0,   -- процесс, который сейчас печатает
     message     TEXT    NOT NULL DEFAULT '',
     created_at  TEXT    NOT NULL,
     updated_at  TEXT    NOT NULL
@@ -74,8 +90,58 @@ CREATE TABLE IF NOT EXISTS batches (
 """
 
 
+def _pid_alive(pid: int) -> bool:
+    """Жив ли процесс с таким идентификатором.
+
+    Нужно, чтобы разбор хвостов после сбоя не трогал задания, которые прямо
+    сейчас печатает другой живой процесс (окно клиента и командная строка
+    работают с одной и той же очередью).
+    """
+    if not pid:
+        return False
+    if pid == os.getpid():
+        return True
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        # Типы объявляем явно: без них ctypes считает возврат 32-битным int и
+        # усекает HANDLE, а в CloseHandle уезжает мусор вместо настоящего
+        # дескриптора. На 64-битной Windows это порча чужого состояния
+        k32 = ctypes.windll.kernel32
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        k32.CloseHandle.restype = wintypes.BOOL
+        k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        h = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        if not h:
+            return False
+        k32.CloseHandle(h)
+        return True
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except OSError:
+        return False
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+@dataclass
+class EnqueueResult:
+    """Что реально встало в пакет, а что отклонено как уже печатающееся."""
+    added: List[str] = field(default_factory=list)
+    # (КСР, пакет, состояние) — состояние нужно, чтобы объяснить оператору,
+    # почему дело отклонено и что с этим делать
+    skipped: List[Tuple[str, str, str]] = field(default_factory=list)
+
+    @property
+    def jobs_added(self) -> int:
+        return len(self.added)
 
 
 @dataclass
@@ -92,6 +158,7 @@ class Job:
     pages: int
     attempts: int
     reported: int
+    owner_pid: int
     message: str
     created_at: str
     updated_at: str
@@ -106,8 +173,15 @@ class PrintQueue:
 
     def __init__(self, path: Optional[Path] = None):
         self.path = Path(path) if path else app_dir() / DB_NAME
-        self.conn = sqlite3.connect(str(self.path), isolation_level=None)
+        # timeout/busy_timeout: очередь пишет поток печати, а читает и правит
+        # поток интерфейса. С дефолтными 5 с занятая база роняла запись
+        # состояния исключением прямо посреди отправки дела — и дело
+        # оставалось «отправляется» навсегда. Ждать тут дешевле, чем терять
+        # состояние: все операции короткие.
+        self.conn = sqlite3.connect(str(self.path), isolation_level=None,
+                                    timeout=BUSY_TIMEOUT_SEC)
         self.conn.row_factory = sqlite3.Row
+        self.conn.execute(f"PRAGMA busy_timeout={int(BUSY_TIMEOUT_SEC * 1000)}")
         # WAL: клиент может писать очередь, пока её читает вторая копия (UI)
         try:
             self.conn.execute("PRAGMA journal_mode=WAL")
@@ -115,6 +189,16 @@ class PrintQueue:
             pass
         self.conn.execute("PRAGMA synchronous=FULL")   # переход состояния на диске
         self.conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Добить колонки, появившиеся после первой установки.
+
+        CREATE TABLE IF NOT EXISTS не меняет уже созданную таблицу, а базы
+        операторов переживают обновление клиента."""
+        have = {r["name"] for r in self.conn.execute("PRAGMA table_info(jobs)")}
+        if "owner_pid" not in have:
+            self.conn.execute("ALTER TABLE jobs ADD COLUMN owner_pid INTEGER NOT NULL DEFAULT 0")
 
     def close(self) -> None:
         self.conn.close()
@@ -128,13 +212,17 @@ class PrintQueue:
     # ---------- восстановление после сбоя ----------
 
     def recover(self) -> List[Job]:
-        """Разобрать состояния, оставшиеся от упавшего запуска.
+        """Разобрать состояния, оставшиеся от УПАВШЕГО запуска.
 
         `SENDING` — крэш между коммитом и ответом спулера: дошло ли задание,
         неизвестно → `AMBIGUOUS`, решает оператор.
 
         `SPOOLED` — `EndDoc` уже вернулся успешно, задание принято спулером;
         дальнейшую судьбу мы не отследили, но факт передачи установлен → `SENT`.
+
+        Трогаем ТОЛЬКО задания, чей процесс-владелец мёртв. Иначе открытие
+        очереди из окна во время печати объявляло бы печатающееся прямо сейчас
+        дело спорным и предлагало оператору напечатать его заново.
         """
         touched: List[Job] = []
         for state, new, note in (
@@ -144,9 +232,11 @@ class PrintQueue:
              "задание было принято спулером, дальнейшая судьба не отслежена"),
         ):
             rows = self.conn.execute(
-                "SELECT id FROM jobs WHERE state = ?", (state,)
+                "SELECT id, owner_pid FROM jobs WHERE state = ?", (state,)
             ).fetchall()
             for r in rows:
+                if _pid_alive(r["owner_pid"]):
+                    continue          # печатает живой процесс — не наше дело
                 self.set_state(r["id"], new, message=note)
                 touched.append(self.get(r["id"]))
         if touched:
@@ -163,14 +253,34 @@ class PrintQueue:
         )
         return batch_id
 
+    def active_batches_by_ksr(self) -> Dict[str, Tuple[str, str]]:
+        """Дела, уже стоящие в печати: КСР → (пакет, состояние)."""
+        q = ",".join("?" * len(ACTIVE))
+        rows = self.conn.execute(
+            f"SELECT ksr, batch_id, state FROM jobs WHERE state IN ({q})", ACTIVE
+        ).fetchall()
+        return {r["ksr"]: (r["batch_id"], r["state"]) for r in rows}
+
     def enqueue(self, batch_id: str, ksrs: Iterable[str], *, printer: str,
-                copies: int = 1, duplex: int = 1) -> List[Job]:
-        """Поставить дела в пакет. Повтор того же КСР в пакете игнорируется."""
+                copies: int = 1, duplex: int = 1) -> EnqueueResult:
+        """Поставить дела в пакет.
+
+        Дело, уже стоящее в печати в ЛЮБОМ пакете, отклоняется. UNIQUE-индекс
+        ловит только повтор внутри одного пакета, а второе окно клиента или
+        новый пакет поверх приостановленного обошли бы его — и дело на 60
+        листов напечаталось бы дважды.
+        """
         now = _now()
+        active = self.active_batches_by_ksr()
+        result = EnqueueResult()
         seq = self.conn.execute(
             "SELECT COALESCE(MAX(seq), -1) AS m FROM jobs WHERE batch_id = ?", (batch_id,)
         ).fetchone()["m"]
         for ksr in ksrs:
+            if ksr in active:
+                batch, state = active[ksr]
+                result.skipped.append((ksr, batch, state))
+                continue
             seq += 1
             self.conn.execute(
                 "INSERT OR IGNORE INTO jobs"
@@ -178,7 +288,9 @@ class PrintQueue:
                 " VALUES (?,?,?,?,?,?,?,?,?)",
                 (batch_id, ksr, seq, JobState.QUEUED.value, printer, copies, duplex, now, now),
             )
-        return self.batch(batch_id)
+            active[ksr] = (batch_id, JobState.QUEUED.value)
+            result.added.append(ksr)
+        return result
 
     # ---------- переходы ----------
 
@@ -191,8 +303,10 @@ class PrintQueue:
         оказаться на диске ДО обращения к спулеру, иначе крэш в этом окне
         не отличить от «дело даже не начинали».
         """
-        sets = ["state = ?", "updated_at = ?"]
-        args: list = [state, _now()]
+        sets = ["state = ?", "updated_at = ?", "owner_pid = ?"]
+        # Владельца держим, пока задание в работе: по нему recover() отличает
+        # живую печать от хвоста упавшего процесса
+        args: list = [state, _now(), os.getpid() if state in ACTIVE_OWNED else 0]
         if job_id is not None:
             sets.append("job_id = ?"); args.append(int(job_id))
         if pages is not None:
@@ -209,21 +323,34 @@ class PrintQueue:
             "UPDATE jobs SET reported = 1, updated_at = ? WHERE id = ?", (_now(), job_pk)
         )
 
-    def resolve(self, ksr: str, action: str) -> int:
-        """Разрешить AMBIGUOUS решением оператора.
+    def resolve(self, job_pk: int, action: str) -> int:
+        """Разрешить решением оператора зависшее задание.
 
         `reprint` — вернуть в очередь, `skip` — считать напечатанным.
-        Другие состояния не трогаем: авторешения здесь запрещены.
+
+        Разрешаем не только AMBIGUOUS, но и «отправляется»/«в спулере»:
+        задание могло остаться в них после сбоя внутри печати, а владельцем
+        числится ЖИВОЙ процесс — восстановление такие записи не трогает
+        принципиально. Без ручного выхода дело блокировало повторную печать
+        до перезапуска клиента. Вызывающий обязан убедиться, что печать не
+        идёт, иначе решение будет принято по работающему заданию.
+        Остальные состояния не трогаем: авторешения здесь запрещены.
+
+        Адресуемся по идентификатору ЗАДАНИЯ, а не по КСР: одно дело может
+        иметь строки в нескольких пакетах, и решение по одной из них не должно
+        поднимать чужую.
         """
         if action not in ("reprint", "skip"):
             raise ValueError(f"неизвестное действие: {action}")
         new = JobState.QUEUED.value if action == "reprint" else "SKIPPED"
         note = ("оператор назначил повторную печать" if action == "reprint"
                 else "оператор пометил как напечатанное вручную")
+        states = (JobState.AMBIGUOUS.value, JobState.SENDING.value,
+                  JobState.SPOOLED.value)
         cur = self.conn.execute(
-            "UPDATE jobs SET state = ?, message = ?, updated_at = ?"
-            " WHERE ksr = ? AND state = ?",
-            (new, note, _now(), ksr, JobState.AMBIGUOUS.value),
+            "UPDATE jobs SET state = ?, message = ?, updated_at = ?, owner_pid = 0"
+            f" WHERE id = ? AND state IN ({','.join('?' * len(states))})",
+            (new, note, _now(), int(job_pk), *states),
         )
         return cur.rowcount
 
@@ -295,9 +422,12 @@ class PrintQueue:
 
     def unfinished_batches(self) -> List[str]:
         """Пакеты, где остались недопечатанные дела."""
+        # Порядок по времени создания: batch_id — случайный uuid, и сортировка
+        # по нему возобновляла бы не тот пакет, который оператор остановил
         rows = self.conn.execute(
-            "SELECT DISTINCT batch_id FROM jobs WHERE state NOT IN"
-            f" ({','.join('?' * len(TERMINAL))}) ORDER BY batch_id", TERMINAL
+            "SELECT j.batch_id AS batch_id, MIN(j.created_at) AS t FROM jobs j"
+            f" WHERE j.state NOT IN ({','.join('?' * len(TERMINAL))})"
+            " GROUP BY j.batch_id ORDER BY t DESC", TERMINAL
         ).fetchall()
         return [r["batch_id"] for r in rows]
 

@@ -169,7 +169,10 @@ def test_crash_during_send_is_not_reprinted_silently(q):
     api, be = FakeAPI(), FakeBackend()
     b = q.create_batch(be.printers[0])
     q.enqueue(b, ["1", "2"], printer=be.printers[0])
-    q.set_state(q.batch(b)[0].id, JS.SENDING.value)     # имитация обрыва
+    jid = q.batch(b)[0].id
+    q.set_state(jid, JS.SENDING.value)                  # имитация обрыва
+    # владелец мёртв — это и отличает упавший запуск от идущей печати
+    q.conn.execute("UPDATE jobs SET owner_pid = 2147483632 WHERE id = ?", (jid,))
 
     res = print_batch(api, be, [case("1"), case("2")], SETTINGS, queue=q,
                       batch_id=b, printer=be.printers[0])
@@ -224,3 +227,119 @@ def test_stop_between_cases_leaves_rest_in_queue(q):
     assert len(be.submitted) == 1
     assert res.paused and "оператор" in res.pause_reason
     assert [j.ksr for j in q.pending(res.batch_id)] == ["2", "3"]
+
+
+def test_stop_finishes_cases_already_in_spooler(q):
+    """Остановка не бросает дела, уже ушедшие в спулер.
+
+    Раньше пауза пропускала ожидание хвоста, и такое дело навсегда оставалось
+    в состоянии SENDING: на сервер оно не отчитывалось, а повторная печать
+    того же КСР отбивалась как «уже стоит в печати».
+    """
+    api, be = FakeAPI(), FakeBackend()
+
+    res = print_batch(api, be, [case("1"), case("2")], SETTINGS, queue=q,
+                      printer=be.printers[0], window=5,
+                      should_stop=lambda: len(be.submitted) >= 1)
+
+    sent = [j for j in q.batch(res.batch_id) if j.ksr == "1"]
+    assert sent and sent[0].state == JobState.SENT.value, \
+        f"дело брошено в состоянии {sent[0].state if sent else '?'}"
+    assert ("1", 4, be.printers[0]) in api.reported
+
+    # И повторная печать этого дела больше не блокируется
+    res2 = print_batch(api, be, [case("1")], SETTINGS, queue=q, printer=be.printers[0])
+    assert res2.already_queued == []
+    assert [d["job_name"] for d in be.submitted][-1] == "КСР 1"
+
+
+def test_printer_error_returns_case_to_queue(q):
+    """Дело, на котором принтер дал сбой, обязано остаться доступным для
+    повторной печати: терминальное состояние выкинуло бы его из пакета навсегда."""
+    api, be = FakeAPI(), FakeBackend()
+    be.fail_next = JobState.BLOCKED
+    res = print_batch(api, be, [case("1"), case("2")], SETTINGS, queue=q,
+                      printer=be.printers[0])
+    assert res.paused
+    assert [j.ksr for j in q.pending(res.batch_id)] == ["1", "2"]
+
+    be.fail_next = None
+    print_batch(api, be, [case("1"), case("2")], SETTINGS, queue=q,
+                batch_id=res.batch_id, printer=be.printers[0])
+    assert sorted(d["job_name"] for d in be.submitted)[-2:] == ["КСР 1", "КСР 2"]
+
+
+def test_case_missing_on_server_is_reported(q):
+    """Дело, которого сервер не вернул, не должно исчезать молча."""
+    api, be = FakeAPI(), FakeBackend()
+    res = print_batch(api, be, [case("1")], SETTINGS, queue=q,
+                      printer=be.printers[0], requested=["1", "2"])
+    failed = {i.ksr: i.message for i in res.failed}
+    assert "2" in failed and "не найдено" in failed["2"]
+    assert len(be.submitted) == 1
+
+
+def test_skip_reason_tells_operator_what_to_do(q):
+    """Отклонение не должно быть тупиком: сообщение обязано подсказать шаг."""
+    from printsys_client.batch import _skip_reason
+    from printsys_client.printing import JobState as JS
+
+    amb = _skip_reason(JS.AMBIGUOUS.value, "b1")
+    assert "Очередь" in amb and "заново" in amb
+
+    busy = _skip_reason(JS.QUEUED.value, "b1")
+    assert "Продолжить пакет" in busy
+
+
+def test_ambiguous_case_reported_with_reason(q):
+    """Дело со спорной судьбой отклоняется — но оператор видит почему."""
+    from printsys_client.printing import JobState as JS
+
+    api, be = FakeAPI(), FakeBackend()
+    b = q.create_batch(be.printers[0])
+    q.enqueue(b, ["1"], printer=be.printers[0])
+    q.set_state(q.batch(b)[0].id, JS.AMBIGUOUS.value)
+
+    res = print_batch(api, be, [case("1")], SETTINGS, queue=q,
+                      printer=be.printers[0])
+    assert be.submitted == []
+    assert [x[0] for x in res.already_queued] == ["1"]
+    assert res.already_queued[0][2] == JS.AMBIGUOUS.value
+
+
+def test_print_exception_does_not_wedge_the_case(q):
+    """Исключение из печати не оставляет дело в «отправляется» навсегда.
+
+    Такое дело числилось за ЖИВЫМ процессом, поэтому восстановление его не
+    трогало, а оператор не мог разобрать его руками — повторная печать этого
+    КСР была невозможна до перезапуска клиента.
+    """
+    class Exploding(FakeBackend):
+        def print_case(self, docs, opts, footer=None):
+            raise RuntimeError("OpenPrinter: принтер исчез")
+
+    api, be = FakeAPI(), Exploding()
+    res = print_batch(api, be, [case("1")], SETTINGS, queue=q, printer=be.printers[0])
+
+    assert res.paused
+    states = {j.ksr: j.state for j in q.batch(res.batch_id)}
+    assert states["1"] == JobState.QUEUED.value, f"дело зависло в {states['1']}"
+
+    # И его можно напечатать снова, когда принтер починили
+    ok = FakeBackend()
+    print_batch(api, ok, [case("1")], SETTINGS, queue=q, batch_id=res.batch_id,
+                printer=ok.printers[0])
+    assert [d["job_name"] for d in ok.submitted] == ["КСР 1"]
+
+
+def test_stuck_sending_can_be_resolved_by_operator(q):
+    """Из «отправляется» есть ручной выход: иначе дело блокирует себя навсегда."""
+    be = FakeBackend()
+    b = q.create_batch(be.printers[0])
+    q.enqueue(b, ["7"], printer=be.printers[0])
+    jid = q.batch(b)[0].id
+    q.set_state(jid, JobState.SENDING.value)      # владелец — этот же живой процесс
+
+    assert q.recover() == []                       # восстановление такое не трогает
+    assert q.resolve(jid, "reprint") == 1
+    assert q.batch(b)[0].state == JobState.QUEUED.value
