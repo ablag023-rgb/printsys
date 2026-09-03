@@ -29,6 +29,11 @@ class JobState(str, Enum):
     AMBIGUOUS = "AMBIGUOUS"  # клиент упал, не зная исхода
 
 
+# DEVMODE.dmOrientation
+DMORIENT_PORTRAIT = 1
+DMORIENT_LANDSCAPE = 2
+
+
 @dataclass
 class PrinterInfo:
     name: str
@@ -47,6 +52,13 @@ class PrintOptions:
     # принтерах (XPS/PDF-писатели без файла показывают модальный диалог и
     # StartDoc падает). На реальный принтер остаётся None.
     output_file: Optional[str] = None
+    # Векторная отрисовка на контекст принтера вместо растра. Даёт максимальную
+    # резкость, но на реальном деле оказалась в 24 раза медленнее растра
+    # (80 с против 3.4 с на 18 листов), поэтому по умолчанию выключена.
+    vector: bool = False
+    # Разрешение растра. 300 dpi против прежних 200 стоит +36% времени и заметно
+    # чище на бумаге; 200 давало мягкие буквы на лазерном принтере в 600 dpi.
+    dpi: int = 300
 
 
 @dataclass
@@ -193,12 +205,17 @@ class Win32Backend(PrintBackend):
             caps["duplex"] = [1]
         return caps
 
-    def _devmode(self, printer: str, opts: PrintOptions):
+    def _devmode(self, printer: str, opts: PrintOptions, *,
+                 tray: Optional[int] = None, orientation: Optional[int] = None):
         """Взять DEVMODE драйвера и поправить нужные поля.
 
         Структуру руками не собираем — в ней есть приватные данные драйвера.
         DocumentProperties с fMode=0 возвращает РАЗМЕР буфера, а не структуру,
         поэтому берём готовый DEVMODE через GetPrinter(level=2).
+
+        `orientation` (1 книжная, 2 альбомная) обязателен к выставлению: без
+        него принтер печатает в своей ориентации, и альбомная справка
+        втискивается в книжный лист.
         """
         import win32con
         import win32print
@@ -213,9 +230,13 @@ class Win32Backend(PrintBackend):
             if opts.duplex:
                 dm.Duplex = int(opts.duplex)
                 dm.Fields |= win32con.DM_DUPLEX
-            if opts.tray:
-                dm.DefaultSource = int(opts.tray)
+            bin_ = tray if tray is not None else opts.tray
+            if bin_:
+                dm.DefaultSource = int(bin_)
                 dm.Fields |= win32con.DM_DEFAULTSOURCE
+            if orientation:
+                dm.Orientation = int(orientation)
+                dm.Fields |= win32con.DM_ORIENTATION
             return dm
         except Exception as e:  # noqa: BLE001
             log.warning("не удалось получить DEVMODE для %s: %s", printer, e)
@@ -224,6 +245,20 @@ class Win32Backend(PrintBackend):
             win32print.ClosePrinter(h)
 
     def print_case(self, docs, opts: PrintOptions, footer=None) -> SubmitResult:
+        """Печать строго по одному заданию за раз на весь процесс.
+
+        Замок здесь, а не у вызывающего: печатать умеют три разных пути
+        (пакет, отдельный документ, продолжение пакета), каждый со своего
+        потока pywebview. Параллельный вход в pdfium/GDI убивает процесс
+        мгновенно и без исключения Python — поймать такое падение нечем,
+        поэтому его надо сделать невозможным. См. `nativelock`.
+        """
+        from . import nativelock
+
+        with nativelock.NATIVE:
+            return self._print_case_locked(docs, opts, footer)
+
+    def _print_case_locked(self, docs, opts: PrintOptions, footer=None) -> SubmitResult:
         """Одно задание на дело; документы отрисовываются по очереди.
 
         StartDoc открывается ОДИН раз — задание атомарно, а порядок листов
@@ -250,7 +285,7 @@ class Win32Backend(PrintBackend):
         except Exception as e:  # noqa: BLE001
             return SubmitResult(0, JobState.FAILED, f"не удалось открыть принтер: {e}")
 
-        dpi = 200
+        dpi = max(72, int(opts.dpi or 300))
         page_no = 0
         job_id = 0
         current_tray = opts.tray
@@ -264,30 +299,64 @@ class Win32Backend(PrintBackend):
             # чтобы отслеживать его в спулере. Берём разницей снимков очереди:
             # имя документа содержит КСР и в рамках пакета уникально.
             job_id = self._find_job(opts.printer, opts.job_name, before)
+            current_orient = None
+            devmode_failures: List[str] = []
+            vector_fallback = [False]
             for d in docs:
-                # Смена лотка между документами — внутри того же задания
-                if d.tray and d.tray != current_tray:
-                    tray_dm = self._devmode(opts.printer, PrintOptions(
-                        printer=opts.printer, copies=opts.copies,
-                        duplex=opts.duplex, tray=d.tray, job_name=opts.job_name,
-                        output_file=opts.output_file,
-                    ))
-                    if tray_dm is not None:
-                        try:
-                            win32gui.ResetDC(hdc, tray_dm)
-                        except Exception as e:  # noqa: BLE001
-                            log.warning("не удалось сменить лоток на %s: %s", d.tray, e)
-                    current_tray = d.tray
-
+                tray = d.tray if d.tray else opts.tray
                 doc = pdfium.PdfDocument(d.pdf)
                 try:
-                    w = dc.GetDeviceCaps(win32con.HORZRES)
-                    h = dc.GetDeviceCaps(win32con.VERTRES)
                     for page in doc:
+                        pw, ph = page.get_size()
+                        # Ориентацию берём от САМОЙ страницы: справка альбомная,
+                        # выписка и платёжка книжные, и всё это в одном задании
+                        want = DMORIENT_LANDSCAPE if pw > ph else DMORIENT_PORTRAIT
+                        if want != current_orient or tray != current_tray:
+                            # ResetDC только МЕЖДУ страницами: внутри
+                            # StartPage/EndPage менять контекст нельзя
+                            dm2 = self._devmode(opts.printer, opts,
+                                                tray=tray, orientation=want)
+                            applied = False
+                            if dm2 is not None:
+                                try:
+                                    win32gui.ResetDC(hdc, dm2)
+                                    applied = True
+                                except Exception as e:  # noqa: BLE001
+                                    log.warning("не удалось применить DEVMODE "
+                                                "(ориентация %s, лоток %s): %s",
+                                                want, tray, e)
+                            if applied:
+                                current_orient, current_tray = want, tray
+                            else:
+                                # НЕ запоминаем неприменённое: иначе следующая
+                                # страница решит, что ориентация уже нужная, и
+                                # весь остаток дела уйдёт в чужой ориентации
+                                devmode_failures.append(
+                                    f"стр. {page_no + 1}: ориентация {want}, лоток {tray}")
+                        # Размеры печатной области меняются вместе с ориентацией,
+                        # поэтому спрашиваем их ПОСЛЕ ResetDC, на каждой странице
+                        w = dc.GetDeviceCaps(win32con.HORZRES)
+                        h = dc.GetDeviceCaps(win32con.VERTRES)
+
                         page_no += 1
-                        pil = page.render(scale=dpi / 72).to_pil()
+                        # Вписываем с сохранением пропорций: печатная область —
+                        # это лист МИНУС аппаратные поля, её соотношение сторон
+                        # не совпадает с листом, и растягивание на (0,0,w,h)
+                        # неравномерно масштабировало страницу по осям
+                        kk = min(w / pw, h / ph)
+                        tw, th = max(1, int(pw * kk)), max(1, int(ph * kk))
+                        ox, oy = (w - tw) // 2, (h - th) // 2
+
                         dc.StartPage()
-                        ImageWin.Dib(pil).draw(dc.GetHandleOutput(), (0, 0, w, h))
+                        drawn = False
+                        if opts.vector:
+                            drawn = self._render_vector(hdc, page, (ox, oy, tw, th))
+                            if not drawn:
+                                vector_fallback[0] = True
+                        if not drawn:
+                            pil = page.render(scale=dpi / 72).to_pil()
+                            ImageWin.Dib(pil).draw(dc.GetHandleOutput(),
+                                                   (ox, oy, ox + tw, oy + th))
                         if footer:
                             self._draw_footer(dc, footer, page_no, w, h)
                         dc.EndPage()
@@ -306,10 +375,51 @@ class Win32Backend(PrintBackend):
             except Exception:  # noqa: BLE001
                 pass
 
-        return SubmitResult(job_id, JobState.SPOOLED)
+        msg = ""
+        if vector_fallback[0]:
+            msg = "часть страниц напечатана растром: векторная отрисовка недоступна"
+        if devmode_failures:
+            msg = ("не удалось задать параметры листа: "
+                   + "; ".join(devmode_failures[:3])
+                   + (" и ещё…" if len(devmode_failures) > 3 else ""))
+            log.warning(msg)
+        return SubmitResult(job_id, JobState.SPOOLED, msg)
+
+    @staticmethod
+    def _render_vector(hdc, page, box) -> bool:
+        """Отрисовать страницу PDF прямо на контекст принтера.
+
+        Драйвер получает текст и векторы вместо растра: раньше страница уходила
+        картинкой в 200 dpi и на лазерном принтере в 600 dpi выглядела мягкой.
+        Проверено на реальной справке: в задании 1685 векторных элементов
+        вместо одной картинки, и файл при этом меньше.
+
+        Возвращает False, если движок не справился — тогда работает растр.
+        """
+        try:
+            import ctypes
+
+            import pypdfium2.raw as praw
+        except ImportError:
+            return False
+        ox, oy, tw, th = box
+        try:
+            praw.FPDF_RenderPage(ctypes.c_void_p(hdc), page.raw,
+                                 int(ox), int(oy), int(tw), int(th), 0,
+                                 praw.FPDF_PRINTING)
+            return True
+        except Exception as e:  # noqa: BLE001
+            log.warning("векторная отрисовка не удалась, печатаем растром: %s", e)
+            return False
 
     @staticmethod
     def _enum_jobs(printer: str):
+        """Список заданий или None, если опросить очередь не удалось.
+
+        Разница принципиальна: пустой список значит «заданий нет», а None —
+        «мы не знаем». Раньше оба случая давали [], и отключённый принтер
+        выглядел как успешно напечатанное дело.
+        """
         import win32print
 
         try:
@@ -318,12 +428,35 @@ class Win32Backend(PrintBackend):
                 return win32print.EnumJobs(h, 0, 999, 1) or []
             finally:
                 win32print.ClosePrinter(h)
+        except Exception as e:  # noqa: BLE001
+            log.warning("не удалось опросить очередь принтера %s: %s", printer, e)
+            return None
+
+    @staticmethod
+    def printer_has_error(printer: str) -> bool:
+        """Принтер сам сообщает о неполадке (offline, нет бумаги, замятие)."""
+        import win32print
+
+        try:
+            h = win32print.OpenPrinter(printer)
+            try:
+                status = win32print.GetPrinter(h, 2).get("Status", 0)
+            finally:
+                win32print.ClosePrinter(h)
         except Exception:  # noqa: BLE001
-            return []
+            return True          # не смогли спросить — считаем неисправным
+        bad = (win32print.PRINTER_STATUS_ERROR
+               | win32print.PRINTER_STATUS_OFFLINE
+               | win32print.PRINTER_STATUS_PAPER_OUT
+               | win32print.PRINTER_STATUS_PAPER_JAM
+               | win32print.PRINTER_STATUS_NOT_AVAILABLE
+               | win32print.PRINTER_STATUS_OUT_OF_MEMORY
+               | win32print.PRINTER_STATUS_DOOR_OPEN)
+        return bool(status & bad)
 
     @classmethod
     def _job_ids(cls, printer: str) -> set:
-        return {j.get("JobId") for j in cls._enum_jobs(printer)}
+        return {j.get("JobId") for j in (cls._enum_jobs(printer) or [])}
 
     @classmethod
     def _find_job(cls, printer: str, job_name: str, before: set) -> int:
@@ -332,9 +465,13 @@ class Win32Backend(PrintBackend):
         Сначала среди появившихся после StartDoc, потом — по имени документа:
         короткое задание может успеть уйти из очереди до опроса.
         """
-        for j in cls._enum_jobs(printer):
-            if j.get("JobId") not in before and j.get("pDocument") == job_name:
-                return int(j.get("JobId") or 0)
+        # Пара попыток: задание появляется в очереди не мгновенно
+        for _ in range(3):
+            for j in (cls._enum_jobs(printer) or []):
+                if j.get("JobId") not in before and j.get("pDocument") == job_name:
+                    return int(j.get("JobId") or 0)
+            time.sleep(0.1)
+        log.warning("не удалось определить id задания «%s» на %s", job_name, printer)
         return 0
 
     @staticmethod
@@ -348,9 +485,14 @@ class Win32Backend(PrintBackend):
 
         text = f"{footer.ksr}/{str(page_no).zfill(2)}"
         try:
+            # Пункты → единицы устройства через РЕАЛЬНОЕ разрешение принтера.
+            # Раньше делили на 792 (высота Letter) и на высоту печатной области,
+            # из-за чего подвал на альбомных листах выходил в полтора раза мельче,
+            # чем на книжных, — в одном и том же сшитом деле
+            dpi_y = dc.GetDeviceCaps(win32con.LOGPIXELSY) or 300
             font = win32ui.CreateFont({
                 "name": "Arial",
-                "height": int(footer.size * h / 792),   # pt → device units по высоте A4
+                "height": max(1, int(footer.size * dpi_y / 72)),
                 "weight": 400,
             })
             old = dc.SelectObject(font)
@@ -371,15 +513,15 @@ class Win32Backend(PrintBackend):
         import win32print
 
         if not job_id:
-            return JobState.SENT
-        try:
-            h = win32print.OpenPrinter(printer)
-            try:
-                jobs = win32print.EnumJobs(h, 0, 999, 1)
-            finally:
-                win32print.ClosePrinter(h)
-        except Exception:  # noqa: BLE001
-            return JobState.SENT
+            # Идентификатор не установлен — судьбу задания мы не отслеживаем.
+            # Раньше это безусловно означало SENT, и отвалившийся принтер
+            # выглядел как напечатанное дело; спрашиваем сам принтер.
+            return JobState.BLOCKED if self.printer_has_error(printer) else JobState.SENT
+
+        jobs = self._enum_jobs(printer)
+        if jobs is None:
+            # Очередь недоступна — не выдаём это за успешную печать
+            return JobState.BLOCKED
 
         for j in jobs:
             if j.get("JobId") != job_id:
@@ -393,7 +535,8 @@ class Win32Backend(PrintBackend):
             if status & win32print.JOB_STATUS_DELETED:
                 return JobState.FAILED
             return JobState.SPOOLED
-        return JobState.SENT
+        # Задания в очереди нет. Это «ушло», только если принтер здоров
+        return JobState.BLOCKED if self.printer_has_error(printer) else JobState.SENT
 
 
 def make_backend() -> PrintBackend:

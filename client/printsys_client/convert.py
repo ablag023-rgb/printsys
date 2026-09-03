@@ -9,16 +9,24 @@ Office и чтобы тесты сборки шли кроссплатформе
 """
 from __future__ import annotations
 
+import gc
 import io
 import logging
 import os
 import tempfile
+import threading
 from pathlib import Path
 from typing import Optional
 
 log = logging.getLogger("printsys.convert")
 
 XL_TYPE_PDF = 0
+
+# Версия правил вёрстки. ПОДНИМАТЬ при любой правке `_fit_to_width` или
+# `normalize_to_a4`: файл в хранилище не меняется, ETag тот же, и без версии
+# оператор после обновления клиента продолжал бы печатать старую геометрию
+# из кеша. Сервер решает ту же задачу парой (content_etag, parser_version).
+CONVERTER_VERSION = "2"
 
 
 def excel_available() -> bool:
@@ -129,8 +137,108 @@ def _fit_to_width(excel, wb) -> None:
             pass
 
 
+def _hide_windows_of(pid: int, stop: "threading.Event") -> None:
+    """Прятать окна нашего экземпляра Excel, пока идёт экспорт.
+
+    Excel показывает собственный прогресс «Публикация…» даже при
+    Visible = False, и он всплывает поверх окна оператора — выглядит так, будто
+    программа куда-то что-то публикует. Ни DisplayAlerts, ни ScreenUpdating его
+    не убирают.
+
+    Ловим СОБЫТИЕМ показа окна, а не опросом: опрос раз в 50 мс всё равно
+    пропускал окно в двух прогонах из четырёх — оно успевало мелькнуть между
+    проверками. Опрос оставлен подстраховкой на случай, если хук не встанет.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        import win32con
+        import win32gui
+        import win32process
+    except ImportError:
+        return
+
+    def hide_hwnd(hwnd) -> None:
+        try:
+            if win32gui.IsWindowVisible(hwnd) and                     win32process.GetWindowThreadProcessId(hwnd)[1] == pid:
+                win32gui.ShowWindow(hwnd, win32con.SW_HIDE)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def sweep() -> None:
+        try:
+            win32gui.EnumWindows(lambda h, _: hide_hwnd(h), None)
+        except Exception:  # noqa: BLE001
+            pass
+
+    EVENT_OBJECT_SHOW = 0x8002
+    WINEVENT_OUTOFCONTEXT = 0x0000
+    WINEVENT_SKIPOWNPROCESS = 0x0002
+    proto = ctypes.WINFUNCTYPE(None, wintypes.HANDLE, wintypes.DWORD, wintypes.HWND,
+                               wintypes.LONG, wintypes.LONG, wintypes.DWORD,
+                               wintypes.DWORD)
+
+    def on_show(hook, event, hwnd, id_obj, id_child, thread, ts):
+        if hwnd:
+            hide_hwnd(hwnd)
+
+    cb = proto(on_show)
+    user32 = ctypes.windll.user32
+    hook = user32.SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW, 0, cb,
+                                  int(pid), 0,
+                                  WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS)
+    msg = wintypes.MSG()
+    try:
+        while not stop.is_set():
+            # Хук доставляется сообщениями — их надо разбирать в этом потоке
+            while user32.PeekMessageW(ctypes.byref(msg), 0, 0, 0, 1):
+                user32.TranslateMessage(ctypes.byref(msg))
+                user32.DispatchMessageW(ctypes.byref(msg))
+            sweep()
+            stop.wait(0.05)
+    finally:
+        if hook:
+            try:
+                user32.UnhookWinEvent(hook)
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def _excel_pid(excel) -> int:
+    try:
+        import win32process
+
+        hwnd = int(excel.Hwnd)
+        if hwnd <= 0:
+            return 0
+        pid = win32process.GetWindowThreadProcessId(hwnd)[1]
+        # На невалидном окне функция не бросает исключение, а возвращает мусор
+        # (проверено: для 0 вернулось отрицательное число). С таким «pid»
+        # наблюдатель прятал бы окна несуществующего процесса, а окна Excel
+        # оставались бы видны оператору
+        return pid if pid > 0 else 0
+    except Exception as e:  # noqa: BLE001
+        log.debug("не удалось определить процесс Excel: %s", e)
+        return 0
+
+
 def xlsx_to_pdf_excel(xlsx_path: Path, out_pdf: Path) -> bool:
-    """Конвертировать через Excel COM. True — получилось."""
+    """Конвертировать через Excel COM. True — получилось.
+
+    Строго по одной конвертации на процесс: каждый вызов поднимает свой
+    экземпляр Excel и ставит ГЛОБАЛЬНЫЙ оконный хук, чтобы прятать его окна.
+    Две параллельные конвертации (предпросмотр во время печати пакета) дают
+    мигающие окна и незакрытые EXCEL.EXE. Замок общий с печатью — см.
+    `nativelock`.
+    """
+    from . import nativelock
+
+    with nativelock.NATIVE:
+        return _xlsx_to_pdf_excel_locked(xlsx_path, out_pdf)
+
+
+def _xlsx_to_pdf_excel_locked(xlsx_path: Path, out_pdf: Path) -> bool:
     try:
         import pythoncom
         import win32com.client as win32
@@ -144,22 +252,38 @@ def xlsx_to_pdf_excel(xlsx_path: Path, out_pdf: Path) -> bool:
         excel = win32.DispatchEx("Excel.Application")
         excel.Visible = False
         excel.DisplayAlerts = False
+        pid = _excel_pid(excel)
+        stop = threading.Event()
+        watcher = None
+        if pid:
+            watcher = threading.Thread(target=_hide_windows_of, args=(pid, stop),
+                                       name="printsys-hide-excel", daemon=True)
+            watcher.start()
         wb = excel.Workbooks.Open(str(xlsx_path), ReadOnly=True, UpdateLinks=0)
         try:
             _fit_to_width(excel, wb)
             wb.ExportAsFixedFormat(XL_TYPE_PDF, str(out_pdf))
         finally:
+            stop.set()
+            if watcher is not None:
+                watcher.join(timeout=1)
             wb.Close(SaveChanges=False)
+            wb = None
         return out_pdf.exists() and out_pdf.stat().st_size > 0
     except Exception as e:  # noqa: BLE001
         log.warning("Excel COM не смог конвертировать %s: %s", xlsx_path.name, e)
         return False
     finally:
+        # Порядок важен: пока живы Python-ссылки на COM-прокси, Quit() не
+        # завершает Excel, а CoUninitialize() рушит апартамент с неосвобождёнными
+        # объектами. Пакет на 50 дел оставлял бы 50 висящих EXCEL.EXE.
         if excel is not None:
             try:
                 excel.Quit()
             except Exception:  # noqa: BLE001
                 pass
+        excel = None
+        gc.collect()
         pythoncom.CoUninitialize()
 
 
