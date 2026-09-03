@@ -16,7 +16,8 @@
       msiexec /i printsys.msi /qn SERVERURL=http://printsys.corp.local:8001
   и попадает в HKCU\Software\printsys\ServerUrl, откуда его читает клиент.
 -->
-<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
   <Product Id="*"
            Name="Система печати судебных дел"
            Language="1049"
@@ -38,6 +39,16 @@
     <MajorUpgrade DowngradeErrorMessage="Уже установлена более новая версия." />
 
     <MediaTemplate EmbedCab="yes" />
+
+    <!-- Закрыть работающий клиент перед обновлением. Без этого установщик
+         падал с 1603: файлы заняты запущенным окном, и оператор видел лишь
+         «ошибка установки» без объяснения. -->
+    <util:CloseApplication Id="CloseGui" Target="printsys-gui.exe"
+                           CloseMessage="yes" RebootPrompt="no"
+                           Description="Закройте окно системы печати и повторите." />
+    <util:CloseApplication Id="CloseCli" Target="printsys.exe"
+                           CloseMessage="yes" RebootPrompt="no"
+                           Description="Закройте командную строку printsys и повторите." />
 
     <!-- Адрес сервера. Пустое значение оставляет ключ ненаписанным, и клиент
          берёт адрес из printsys.json рядом с exe либо из своих настроек. -->

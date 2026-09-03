@@ -77,6 +77,9 @@ def main() -> int:
     run([str(WIX / "candle.exe"), "-nologo",
          f"-dVersion={args.version}", f"-dSourceDir={DIST}",
          "-arch", "x64",
+         # WixUtilExtension нужен для util:CloseApplication — закрытия
+         # работающего клиента перед обновлением
+         "-ext", "WixUtilExtension",
          "-out", str(OBJ) + "\\",
          str(ROOT / "packaging" / "printsys.wxs"), str(files_wxs)])
 
@@ -90,6 +93,7 @@ def main() -> int:
          #     всё per-user;
          #   ICE91 — «файлы не попадут в профиль каждого пользователя»: это и
          #     есть цель per-user установщика.
+         "-ext", "WixUtilExtension",
          "-sice:ICE38", "-sice:ICE43", "-sice:ICE57", "-sice:ICE64", "-sice:ICE91",
          "-out", str(msi),
          str(OBJ / "printsys.wixobj"), str(OBJ / "files.wixobj")])

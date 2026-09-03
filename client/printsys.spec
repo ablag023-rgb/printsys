@@ -13,7 +13,20 @@
 
 # tkinter НЕ исключаем — на нём построен интерфейс. Остальное тяжёлое не нужно:
 # клиент не строит графики и не считает матрицы.
-EXCLUDES = ["matplotlib", "numpy", "pytest", "IPython", "PySide6", "PyQt5"]
+# Тяжёлое и ненужное. pandas/pyarrow/scipy затягиваются транзитивно из
+# окружения разработки и дают +70 МБ на пустом месте: клиент не считает
+# ни таблиц данных, ни матриц.
+EXCLUDES = [
+    "matplotlib", "numpy", "pytest", "IPython", "PySide6", "PyQt5",
+    "pandas", "pyarrow", "scipy", "sklearn", "notebook", "IPython",
+    "tkinter", "PIL.ImageQt",
+    # Серверные зависимости: они нужны ТОЛЬКО автономной сборке (свой spec).
+    # Без явного исключения PyInstaller тянет их из окружения разработки и
+    # раздувает боевую раздачу вдвое.
+    "sqlalchemy", "alembic", "psycopg2", "aiosqlite", "asyncpg",
+    "fastapi", "starlette", "uvicorn", "apscheduler",
+    "boto3", "botocore", "jose", "argon2", "passlib",
+]
 HIDDEN = [
     "win32timezone",
     "keyring.backends.Windows",   # keyring ищет бэкенды через entry points
@@ -41,6 +54,7 @@ exe_cli = EXE(PYZ(a_cli.pure), a_cli.scripts, [], exclude_binaries=True,
 exe_gui = EXE(PYZ(a_gui.pure), a_gui.scripts, [], exclude_binaries=True,
               name="printsys-gui", console=False, upx=False,
               disable_windowed_traceback=False)
+
 
 # Библиотеки складываем общие: наборы почти совпадают, COLLECT снимет дубли
 coll = COLLECT(exe_cli, exe_gui,
