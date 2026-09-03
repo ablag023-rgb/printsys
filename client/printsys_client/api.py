@@ -11,14 +11,25 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, Iterator, List, Optional
 
+import threading
+
 import httpx
 
 from .config import Config
 
 log = logging.getLogger("printsys.api")
 
+# Таймауты по фазам. Короткое ПОДКЛЮЧЕНИЕ здесь принципиально: если имя сервера
+# резолвится и в IPv6, и в IPv4, а служба слушает только IPv4, попытка по
+# IPv6-адресу висит до таймаута ОС — это 21 секунда на КАЖДОЕ соединение.
+# Замерено: localhost → 21.05 с без таймаута и 1.99 с с connect=2.
+# Чтение оставляем длинным: документы дела весят мегабайты.
+TIMEOUT = httpx.Timeout(connect=3.0, read=120.0, write=120.0, pool=10.0)
+
+# Сколько КСР ещё безопасно отправить в query-строке
+CASES_GET_LIMIT = 30
+
 KEYRING_SERVICE = "printsys"
-TIMEOUT = httpx.Timeout(10.0, read=120.0)
 
 
 class AuthError(RuntimeError):
@@ -120,10 +131,25 @@ class Case:
 
 class PrintsysAPI:
     def __init__(self, cfg: Config):
+        self._refresh_lock = threading.Lock()
         self.cfg = cfg
         self._access: Optional[str] = None
         self._refresh: Optional[str] = load_refresh(cfg.server_url)
         self._client = httpx.Client(base_url=cfg.server_url, timeout=TIMEOUT)
+
+    def rebind(self, server_url: str) -> None:
+        """Переключить клиента на другой адрес сервера.
+
+        Токены прежнего сервера не годятся: они выданы другой системой, и
+        держать их — значит ходить с чужим пропуском.
+        """
+        self.cfg.server_url = server_url.rstrip("/")
+        try:
+            self._client.close()
+        except Exception:  # noqa: BLE001
+            pass
+        self._client = httpx.Client(base_url=self.cfg.server_url, timeout=TIMEOUT)
+        self._access = self._refresh = None
 
     def close(self) -> None:
         self._client.close()
@@ -163,6 +189,16 @@ class PrintsysAPI:
             return False
 
     def _do_refresh(self) -> bool:
+        """Обновление токена сериализовано.
+
+        Refresh ротируемый: два одновременных обновления (поток печати и вызов
+        со страницы) предъявят серверу один и тот же токен, тот увидит повторное
+        использование и отзовёт всю цепочку — оператора выкинет посреди пакета.
+        """
+        with self._refresh_lock:
+            return self._do_refresh_locked()
+
+    def _do_refresh_locked(self) -> bool:
         if not self._refresh:
             return False
         r = self._client.post("/api/auth/refresh", data={"refresh_token": self._refresh})
@@ -225,13 +261,27 @@ class PrintsysAPI:
         r.raise_for_status()
         return r.json()
 
-    def cases(self, ksrs: Optional[List[str]] = None, only_complete: bool = False) -> List[Case]:
-        params: Dict[str, Any] = {"only_complete": str(only_complete).lower()}
-        if ksrs:
-            params["ksrs"] = ",".join(ksrs)
-        r = self._request("GET", "/api/cases", params=params)
+    def cases(self, ksrs: Optional[List[str]] = None,
+              only_complete: bool = False) -> List[Case]:
+        """Дела с составом документов.
+
+        Длинный список уходит ТЕЛОМ запроса: пакет из сотен дел не помещается
+        в query-строку — прокси и сервер режут URL (414), и печать не
+        начиналась с невнятной ошибкой. Короткий список оставляем на GET:
+        он проще для отладки и логов.
+        """
+        if ksrs and len(ksrs) > CASES_GET_LIMIT:
+            r = self._request("POST", "/api/cases/query",
+                              json={"ksrs": list(ksrs), "only_complete": only_complete})
+        else:
+            params: Dict[str, Any] = {}
+            if ksrs:
+                params["ksrs"] = ",".join(ksrs)
+            if only_complete:
+                params["only_complete"] = "true"
+            r = self._request("GET", "/api/cases", params=params)
         r.raise_for_status()
-        return [Case.from_json(x) for x in r.json()["cases"]]
+        return [Case.from_json(d) for d in r.json()["cases"]]
 
     def case(self, ksr: str) -> Case:
         r = self._request("GET", f"/api/cases/{ksr}")

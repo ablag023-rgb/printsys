@@ -64,7 +64,20 @@ def cache_dir() -> Path:
     return p
 
 
-CONFIG_PATH = app_dir() / "config.json"
+class _ConfigPath(type(Path())):
+    """Путь к настройкам, вычисляемый лениво.
+
+    Раньше `app_dir()` вызывался на ИМПОРТЕ модуля и делал mkdir: при
+    недоступном для записи профиле клиент падал трейсбеком ещё до того, как
+    успевал что-то сообщить оператору.
+    """
+
+
+def config_path() -> Path:
+    return app_dir() / "config.json"
+
+
+CONFIG_PATH = config_path()
 
 
 @dataclass
@@ -78,6 +91,12 @@ class Config:
     copies: int = 1
     # Сколько дел держим «в воздухе» в спулере (SPEC §5.2)
     print_window: int = 3
+    # Качество печати: normal — растр 300 dpi (быстро), max — векторная
+    # отрисовка на контекст принтера (резче, но на порядок дольше)
+    print_quality: str = "normal"
+    # Поля, значение которых пришло из окружения или аргумента запуска.
+    # В профиль не сохраняются. Не часть настроек — служебная пометка.
+    _transient: set = field(default_factory=set, repr=False, compare=False)
 
     @staticmethod
     def _registry_defaults(hive_name: str) -> Dict[str, Any]:
@@ -128,8 +147,11 @@ class Config:
                        cls._registry_defaults("HKEY_CURRENT_USER"),
                        cls._portable_defaults()):
             for k, v in source.items():
-                if hasattr(cfg, k):
+                if hasattr(cfg, k) and not k.startswith("_"):
                     setattr(cfg, k, v)
+        # Нормализуем здесь же: иначе адрес со слэшем на конце из раздачи
+        # отличается от загруженного и оседает в профиле у каждого оператора
+        cfg.server_url = str(cfg.server_url or "").rstrip("/")
         return cfg
 
     @classmethod
@@ -143,11 +165,15 @@ class Config:
                         setattr(cfg, k, v)
             except (OSError, json.JSONDecodeError):
                 pass
-        # Переменные окружения перекрывают файл — удобно для тестов и MSI
+        # Переменные окружения перекрывают файл — удобно для тестов и MSI.
+        # Запоминаем, что значение временное: сохранять его в профиль нельзя,
+        # иначе адрес отладочного стенда останется у оператора навсегда
         if os.environ.get("PRINTSYS_SERVER"):
             cfg.server_url = os.environ["PRINTSYS_SERVER"]
+            cfg._transient.add("server_url")
         if os.environ.get("PRINTSYS_LOGIN"):
             cfg.login = os.environ["PRINTSYS_LOGIN"]
+            cfg._transient.add("login")
         cfg.server_url = cfg.server_url.rstrip("/")
         return cfg
 
@@ -160,7 +186,10 @@ class Config:
         адрес навсегда. Пишем лишь отличия от слоя умолчаний.
         """
         base = Config.defaults()
-        data = {k: v for k, v in self.__dict__.items() if getattr(base, k, None) != v}
+        data = {k: v for k, v in self.__dict__.items()
+                if not k.startswith("_")
+                and k not in self._transient
+                and getattr(base, k, None) != v}
         CONFIG_PATH.write_text(
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
         )

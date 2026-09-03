@@ -114,3 +114,32 @@ def test_data_dir_stays_in_profile_by_default(monkeypatch, tmp_path):
 def test_data_dir_override_is_honoured(monkeypatch, tmp_path):
     monkeypatch.setenv("PRINTSYS_DATA_DIR", str(tmp_path / "usb"))
     assert cfgmod.app_dir() == tmp_path / "usb"
+
+
+def test_env_server_is_not_persisted(env, monkeypatch):
+    """Отладочный адрес из окружения не должен вмерзать в профиль оператора:
+    иначе после снятия переменной клиент продолжит ходить на стенд."""
+    d, user_cfg = env
+    portable(d, server_url="http://corp:8001")
+    monkeypatch.setenv("PRINTSYS_SERVER", "http://debug:9999")
+    cfg = Config.load()
+    assert cfg.server_url == "http://debug:9999"
+    cfg.printer = "HP"
+    cfg.save()
+    assert json.loads(user_cfg.read_text("utf-8")) == {"printer": "HP"}
+    monkeypatch.delenv("PRINTSYS_SERVER")
+    assert Config.load().server_url == "http://corp:8001"
+
+
+def test_trailing_slash_in_distribution_is_not_persisted(env):
+    """Админ написал адрес со слэшем — это не повод замораживать его в профиле
+    у каждого оператора при первом же сохранении настроек."""
+    d, user_cfg = env
+    portable(d, server_url="http://corp:8001/")
+    cfg = Config.load()
+    cfg.printer = "HP"
+    cfg.save()
+    assert json.loads(user_cfg.read_text("utf-8")) == {"printer": "HP"}
+
+    portable(d, server_url="http://new-corp:9000")
+    assert Config.load().server_url == "http://new-corp:9000"

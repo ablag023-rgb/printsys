@@ -22,6 +22,7 @@ from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
 
 from .api import Case, Document
+from . import pdfcache
 from .convert import xlsx_to_pdf
 from .fonts import font_name, register_fonts
 
@@ -55,6 +56,30 @@ class PreparedCase:
     @property
     def total_pages(self) -> int:
         return sum(d.pages for d in self.docs)
+
+
+def natural_key(name: str):
+    """Ключ «человеческой» сортировки: Приложение 2 раньше Приложения 10.
+
+    Порядок отрисовки — это порядок листов в СШИТОМ деле, и сквозная нумерация
+    подвала ложится поверх него. Лексикографический порядок ставил «10» перед
+    «2», и дело уходило в суд с перепутанными вложениями.
+    """
+    return [int(t) if t.isdigit() else t.casefold()
+            for t in re.split(r"(\d+)", name or "")]
+
+
+def to_pdf(raw: bytes, name: str) -> Optional[bytes]:
+    """Байты документа → PDF. None — формат не поддерживается или не сконвертировался.
+
+    Общая точка для пакетной печати и для печати одного документа: правила
+    «что считаем печатаемым» должны быть одни.
+    """
+    if XLSX_RE.search(name):
+        return xlsx_to_pdf(raw, name)
+    if PDF_RE.search(name):
+        return raw
+    return None
 
 
 def _page_count(pdf: bytes) -> int:
@@ -145,6 +170,7 @@ def prepare_case(
     settings: Dict[str, Any],
     fetch: Callable[[Document], bytes],
     slot_trays: Optional[Dict[str, int]] = None,
+    on_step: Optional[Callable[[str], None]] = None,
 ) -> PreparedCase:
     """Получить и подготовить документы дела в порядке слотов.
 
@@ -155,7 +181,7 @@ def prepare_case(
     slot_trays = slot_trays or {}
 
     order = {s["id"]: i for i, s in enumerate(slots_cfg)}
-    docs = sorted(case.documents, key=lambda d: (order.get(d.slot_id, 999), d.name))
+    docs = sorted(case.documents, key=lambda d: (order.get(d.slot_id, 999), natural_key(d.name), d.key))
 
     out = PreparedCase(ksr=case.ksr)
     out.inventory = [f"{d.slot_name}: {d.name}" for d in docs]
@@ -173,6 +199,8 @@ def prepare_case(
         pdf: Optional[bytes] = None
         reason = ""
 
+        if on_step:
+            on_step(f"скачиваю {i + 1}/{len(docs)}: {d.name[:48]}")
         try:
             raw = fetch(d)
         except Exception as e:  # noqa: BLE001
@@ -182,13 +210,24 @@ def prepare_case(
 
         if raw is not None:
             if XLSX_RE.search(d.name):
-                pdf = xlsx_to_pdf(raw, d.name)
+                # Кеш по content_etag: конвертация xlsx стоит десятки секунд,
+                # и повторная печать того же дела не должна их платить снова
+                cached = pdfcache.get(d.etag)
+                if cached is not None:
+                    if on_step:
+                        on_step(f"готовый PDF из кеша: {d.name[:48]}")
+                    pdf = cached
+                else:
+                    if on_step:
+                        on_step(f"конвертирую через Excel: {d.name[:48]} "
+                                "(это может занять до минуты)")
+                    pdf = pdfcache.get_or_convert(d.etag, raw, d.name, to_pdf)
                 if pdf is None:
                     reason = "не сконвертировался"
-            elif PDF_RE.search(d.name):
-                pdf = raw
             else:
-                reason = "формат не поддерживается"
+                pdf = to_pdf(raw, d.name)
+                if pdf is None:
+                    reason = "формат не поддерживается"
 
         if pdf is None:
             out.skipped.append(f"{d.name}: {reason}")
@@ -209,6 +248,8 @@ def prepare_case(
             ))
             continue
 
+        if on_step:
+            on_step(f"готово {i + 1}/{len(docs)}: {d.slot_name[:24]} — {n} л.")
         out.docs.append(PreparedDoc(
             slot_id=d.slot_id, slot_name=d.slot_name, order=i,
             name=d.name, pdf=pdf, pages=n, tray=tray,

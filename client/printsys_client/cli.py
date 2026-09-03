@@ -24,11 +24,27 @@ from .api import AuthError, PrintsysAPI, ServerError
 from .prepare import build_preview_pdf, prepare_case
 from .batch import flush_reports, print_batch
 from .config import Config
+from . import logsetup
 from .printing import JobState, make_backend
 from .queue import PrintQueue
 
 
+def _setup_console() -> None:
+    """Консоль Windows по умолчанию cp866, а в выводе есть « », «…», «→».
+
+    Без этого `printsys queue` падал трейсбеком ПОСЛЕ того, как уже перевёл
+    задания в другое состояние, — и оператор не видел, какие дела ждут решения.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def _setup_logging(verbose: bool) -> None:
+    # Файл журнала общий с окном: разбирать неполадки удобнее в одном месте
+    logsetup.setup(verbose)
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
         format="%(levelname)-5s %(message)s",
@@ -270,7 +286,8 @@ def cmd_resolve(args, cfg: Config) -> int:
     повтор — двойная печать, пропуск — потерянный пакет в суд."""
     action = "reprint" if args.reprint else "skip"
     with PrintQueue() as q:
-        n = q.resolve(args.ksr, action)
+        jobs = [j for j in q.by_state(JobState.AMBIGUOUS.value) if j.ksr == args.ksr]
+        n = sum(q.resolve(j.id, action) for j in jobs)
     if not n:
         print(f"КСР {args.ksr} не найден среди спорных заданий", file=sys.stderr)
         return 1
@@ -368,6 +385,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     sp.add_argument("--window", type=int)
     sp.set_defaults(func=cmd_config)
 
+    _setup_console()
     args = p.parse_args(argv)
     if not getattr(args, "cmd", None):
         p.print_help()
