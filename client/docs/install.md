@@ -17,7 +17,7 @@
 Ставится в профиль пользователя, **UAC не запрашивает**:
 
 ```bash
-msiexec /i printsys-0.5.0-peruser.msi /qn SERVERURL=http://printsys.corp.local:8001
+msiexec /i printsys-1.0.0-peruser.msi /qn SERVERURL=http://printsys.corp.local:8001
 ```
 
 | Что | Куда |
@@ -76,7 +76,7 @@ sha256 `2c1888d5d1dba377fc7fa14444cf556963747ff9a0a289a3599cf09da03b9e2e`),
 
 ## Вариант 2. Переносимая раздача (ZIP)
 
-Оператор получает `printsys-0.5.0-portable.zip` (~61 МБ), распаковывает,
+Оператор получает `printsys-1.0.0-portable.zip` (~61 МБ), распаковывает,
 например, в `%LOCALAPPDATA%\Programs\printsys`, запускает `Запустить.cmd` — и
 работает. Ни установки, ни реестра, ни администратора. Python на машине не
 нужен, он внутри.
@@ -152,7 +152,7 @@ Manager (refresh-токен) — то есть **вне** каталога пр�
 pip install -r requirements.txt pyinstaller
 python -m PyInstaller --noconfirm --clean printsys.spec
 python packaging/build_zip.py --server http://printsys.corp.local:8001   # ZIP, 61.4 МБ
-python packaging/build_msi.py --version 0.5.0                           # MSI, 60.2 МБ
+python packaging/build_msi.py --version 1.0.0                           # MSI, 60.2 МБ
 ```
 
 `build_zip.py` без `--server` убирает `printsys.json` из каталога — чтобы
@@ -166,7 +166,9 @@ python packaging/build_msi.py --version 0.5.0                           # MSI, 6
 ## Обновления
 
 Переносимый вариант: распаковать новый ZIP поверх (клиент должен быть закрыт).
-MSI: major upgrade — новая версия удаляет старую и встаёт на её место. В обоих
+MSI: major upgrade — новая версия удаляет старую и встаёт на её место.
+Запущенный клиент установщик закрывает сам (`util:CloseApplication`);
+без этого обновление падало с кодом 1603. В обоих
 случаях очередь и настройки в профиле переживают обновление, схема SQLite
 создаётся идемпотентно, миграция не нужна.
 
