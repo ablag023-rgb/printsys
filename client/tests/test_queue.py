@@ -209,3 +209,40 @@ def test_unfinished_batches_newest_first(q):
                        (f"2026-09-0{i+1}T00:00:00+00:00", b))
         ids.append(b)
     assert q.unfinished_batches()[0] == ids[-1]
+
+
+def test_cancel_clears_unresolved_when_asked(tmp_path):
+    """«Отменить незавершённые» обязана реально очищать очередь.
+
+    Раньше снимались только QUEUED, а «требует решения» и «отправляется»
+    оставались. Они не терминальные, поэтому пакет по-прежнему числился
+    незавершённым, дело — «уже стоящим в печати», и список не пустел: оператор
+    нажимал отмену и не видел никакого эффекта.
+    """
+    with PrintQueue(tmp_path / "q.db") as q:
+        b = q.create_batch("printer")
+        q.enqueue(b, ["1", "2", "3"], printer="printer")
+        jobs = {j.ksr: j.id for j in q.batch(b)}
+        q.set_state(jobs["2"], JobState.AMBIGUOUS.value)
+        q.set_state(jobs["3"], JobState.SENDING.value)
+
+        # Старое поведение: снимается только «в очереди», пакет остаётся
+        assert q.cancel_batch(b) == 1
+        assert q.unfinished_batches() == [b]
+
+        assert q.cancel_batch(b, include_unresolved=True) == 2
+        assert q.unfinished_batches() == []
+        # И дела больше не считаются стоящими в печати
+        assert q.enqueue(q.create_batch("printer"), ["1", "2", "3"],
+                         printer="printer").skipped == []
+
+
+def test_cancel_never_touches_sent(tmp_path):
+    """Уже переданное принтеру отмена не трогает: оно физически у него."""
+    with PrintQueue(tmp_path / "q.db") as q:
+        b = q.create_batch("printer")
+        q.enqueue(b, ["9"], printer="printer")
+        jid = q.batch(b)[0].id
+        q.set_state(jid, JobState.SENT.value)
+        assert q.cancel_batch(b, include_unresolved=True) == 0
+        assert q.batch(b)[0].state == JobState.SENT.value

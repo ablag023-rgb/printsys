@@ -537,19 +537,27 @@ class Bridge:
             n = q.resolve(int(job_id), action)
         return {"ok": bool(n), "changed": n}
 
-    def queue_cancel(self, batch_id: str = "") -> Dict[str, Any]:
+    def queue_cancel(self, batch_id: str = "",
+                     include_unresolved: bool = False) -> Dict[str, Any]:
         """Снять неотправленные дела пакета.
 
         Без этого остановленный пакет становился тупиком: дела остаются
         QUEUED, а значит считаются «уже в печати» и не ставятся в новый пакет.
-        Отправленное не трогаем — оно уже у принтера.
+        Отправленное в принтер не трогаем — оно уже у него.
+
+        `include_unresolved` снимает и те, что ждут решения оператора: иначе
+        команда «отменить незавершённые» очередь не очищала, потому что такие
+        строки не терминальные. Возвращаем и остаток — интерфейсу нужно знать,
+        что ещё висит, чтобы не показывать «готово» при непустой очереди.
         """
         if self.job.running:
             return {"ok": False, "error": "идёт печать, сначала остановите её"}
         with PrintQueue() as q:
             batches = [batch_id] if batch_id else q.unfinished_batches()
-            n = sum(q.cancel_batch(b) for b in batches)
-        return {"ok": True, "cancelled": n}
+            n = sum(q.cancel_batch(b, include_unresolved=bool(include_unresolved))
+                    for b in batches)
+            left = sum(len(q.batch(b)) for b in q.unfinished_batches())
+        return {"ok": True, "cancelled": n, "left": left}
 
     def queue_purge(self) -> Dict[str, Any]:
         with PrintQueue() as q:

@@ -354,12 +354,28 @@ class PrintQueue:
         )
         return cur.rowcount
 
-    def cancel_batch(self, batch_id: str) -> int:
-        """Снять непечатанное. Отправленное не трогаем — оно уже у принтера."""
+    def cancel_batch(self, batch_id: str, *, include_unresolved: bool = False) -> int:
+        """Снять непечатанное.
+
+        Отправленное в принтер не отменяется в любом случае — оно уже у него,
+        и очередь тут не властна.
+
+        `include_unresolved` снимает ещё и «требует решения»/«отправляется»/
+        «в спулере». Без этого команда «отменить незавершённые» не очищала
+        очередь: такие строки не терминальные, поэтому пакет продолжал
+        числиться незавершённым, а дело — «уже стоящим в печати». Цена
+        решения: если дело всё-таки напечаталось, сервер об этом не узнает и
+        оператор сможет напечатать его повторно — это исправимо, в отличие от
+        дела, потерянного в вечно неснимаемой очереди.
+        """
+        states = ((JobState.QUEUED.value, JobState.AMBIGUOUS.value,
+                   JobState.SENDING.value, JobState.SPOOLED.value)
+                  if include_unresolved else (JobState.QUEUED.value,))
         cur = self.conn.execute(
             "UPDATE jobs SET state = 'CANCELLED', message = 'отменено оператором',"
-            " updated_at = ? WHERE batch_id = ? AND state = ?",
-            (_now(), batch_id, JobState.QUEUED.value),
+            " updated_at = ?, owner_pid = 0"
+            f" WHERE batch_id = ? AND state IN ({','.join('?' * len(states))})",
+            (_now(), batch_id, *states),
         )
         return cur.rowcount
 
