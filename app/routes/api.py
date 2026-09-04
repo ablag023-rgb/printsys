@@ -39,6 +39,9 @@ def _case_payload(c: Case, slots_cfg: List[Dict[str, Any]],
 
     Отдаём не пути, а идентификаторы для скачивания через сервер.
     """
+    # Архивные копии сюда не попадают физически: `c.slots` содержит только
+    # актуальные версии, а `c.archived` клиенту не отдаётся вовсе. Так
+    # напечатать отброшенную редакцию нельзя даже по ошибке.
     docs: List[Dict[str, Any]] = []
     for order, s in enumerate(slots_cfg):
         for f in sorted(c.slots.get(s["id"], []), key=lambda x: x["name"]):
@@ -66,6 +69,9 @@ def _case_payload(c: Case, slots_cfg: List[Dict[str, Any]],
         "missing_slots": services.case_missing_slots(c, slots_cfg),
         "is_stale": c.is_stale,
         "is_orphaned": c.is_orphaned,
+        # Система не смогла выбрать версию документа сама — оператор должен
+        # увидеть это до того, как дело уйдёт в принтер
+        "needs_attention": bool(getattr(c, "needs_attention", False)),
         "printed_at": c.printed_at.isoformat() if c.printed_at else None,
         "submitted_at": c.submitted_at.isoformat() if c.submitted_at else None,
         "documents": docs,

@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from . import s3, scanner, settings_store
+from . import dedup, s3, scanner, settings_store
 from .models import Case, ParsedDoc, ScanRun, SourceObject, Storage
 
 log = logging.getLogger("printsys.scan")
@@ -37,6 +37,7 @@ class ScanStats:
         self.parsed_count = 0
         self.parse_cache_hits = 0
         self.cases_new = 0
+        self.docs_archived = 0
         self.cases_updated = 0
         self.cases_orphaned = 0
 
@@ -104,8 +105,12 @@ async def scan_storage(session: AsyncSession, st: Storage, trigger: str = "manua
 
     run.finished_at = datetime.utcnow()
     run.duration_ms = int((time.perf_counter() - t0) * 1000)
+    # Только те счётчики, под которые есть колонка: `docs_archived` считается
+    # при сборке дел, а не при листинге хранилища, и в журнале прогона места
+    # ему нет — иначе он молча повис бы атрибутом мимо базы
     for k, v in stats.as_dict().items():
-        setattr(run, k, v)
+        if hasattr(type(run), k):
+            setattr(run, k, v)
 
     if completed:
         st.last_ok_scan_at = run.finished_at
@@ -208,6 +213,12 @@ async def rebuild_cases(session: AsyncSession, scan_id: int, stats: ScanStats,
     for ksr, anchor in anchors.items():
         related = [r for r in live if scanner.name_contains_ksr(r.name, ksr)]
 
+        # Из одноимённых копий в дело идёт только актуальная. Раньше сюда
+        # попадали все: документ, перезалитый под новым ключом или лежащий в
+        # двух папках, показывался дважды и ПЕЧАТАЛСЯ дважды.
+        related, archived, ambiguous = dedup.split_by_name(related)
+        stats.docs_archived += len(archived)
+
         slots: Dict[str, List[Dict[str, Any]]] = {}
         comp: List[tuple] = []
         for r in related:
@@ -236,13 +247,23 @@ async def rebuild_cases(session: AsyncSession, scan_id: int, stats: ScanStats,
             if case.printed_at:
                 case.is_stale = True   # состав изменился после печати
 
-        meta = (parsed.get(anchor.etag).parsed_meta if parsed.get(anchor.etag) else None) or {}
+        # Реквизиты дела читаем из АКТУАЛЬНОЙ справки. Если справка перезалита,
+        # старая редакция уехала в архив, и сумма долга в деле обязана
+        # соответствовать той справке, которая уйдёт в печать
+        cur_anchor = next((r for r in related if r.is_anchor and r.ksr == ksr), anchor)
+        pd = parsed.get(cur_anchor.etag)
+        meta = (pd.parsed_meta if pd else None) or {}
         case.date_formed = meta.get("date_formed", "") or ""
         case.account = meta.get("account", "") or ""
         case.period = meta.get("period", "") or ""
         case.provider = meta.get("provider", "") or ""
         case.service = meta.get("service", "") or ""
         case.slots = slots
+        # Архив в состав НЕ входит и в composition_hash не участвует: иначе
+        # появление старой копии в другой папке поднимало бы «изменилось
+        # после печати» у дела, состав которого на деле не менялся
+        case.archived = archived
+        case.needs_attention = ambiguous
         case.composition_hash = new_hash
         case.last_seen_scan_id = scan_id
         case.is_orphaned = False
@@ -272,6 +293,9 @@ async def scan_all(session: AsyncSession, trigger: str = "manual") -> Dict[str, 
         "storages": 0, "objects_seen": 0, "objects_new": 0, "objects_changed": 0,
         "objects_missing": 0, "parsed_count": 0, "parse_cache_hits": 0,
         "cases_new": 0, "cases_updated": 0, "cases_orphaned": 0,
+        # Сколько копий документов отбраковано как неактуальные — иначе
+        # дедупликация работала бы молча и проверить её было бы нечем
+        "docs_archived": 0,
         "duration_ms": 0, "errors": [],
     }
     storages = (await session.execute(
@@ -296,7 +320,7 @@ async def scan_all(session: AsyncSession, trigger: str = "manual") -> Dict[str, 
 
     stats = ScanStats()
     await rebuild_cases(session, max((s.id for s in storages), default=0), stats, healthy)
-    for k in ("cases_new", "cases_updated", "cases_orphaned"):
+    for k in ("cases_new", "cases_updated", "cases_orphaned", "docs_archived"):
         total[k] += getattr(stats, k)
 
     log.info("скан завершён: %s", {k: v for k, v in total.items() if k != "errors"})
@@ -317,4 +341,17 @@ def case_missing_slots(case: Case, slots_cfg: List[Dict[str, Any]]) -> List[str]
 
 
 def case_has_duplicates(case: Case) -> bool:
-    return any(len(v) > 1 for v in (case.slots or {}).values())
+    """Система не смогла выбрать версию документа сама.
+
+    Раньше признак означал «в слоте больше одного файла». После дедупликации
+    это перестало быть дефектом: одноимённые копии схлопываются, а несколько
+    РАЗНЫХ документов в слоте — норма (две платёжки, две выписки на разные
+    объекты). Тревожит теперь только неразрешимая пара версий: даты совпадают,
+    содержимое разное — такое дело оператор обязан посмотреть сам.
+    """
+    return bool(getattr(case, "needs_attention", False))
+
+
+def case_archived_docs(case: Case) -> List[Dict[str, Any]]:
+    """Отброшенные копии — для показа в карточке дела."""
+    return list(getattr(case, "archived", None) or [])

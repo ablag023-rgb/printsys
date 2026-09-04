@@ -5,7 +5,7 @@
       <div style="font-size:11px;color:var(--text-soft);text-transform:uppercase;letter-spacing:.08em;font-weight:600">КСР</div>
       <div class="ksr-big">{{ c.ksr }}</div>
     </div>
-    {% if is_complete and has_dup %}<span class="dot warn" style="margin-left:12px">Есть дубликаты</span>
+    {% if has_dup %}<span class="dot warn" style="margin-left:12px">Требует внимания</span>
     {% elif is_complete %}<span class="dot ok" style="margin-left:12px">Готово к печати</span>
     {% else %}<span class="dot err" style="margin-left:12px">Нет: {{ missing|join(', ') }}</span>
     {% endif %}
@@ -55,6 +55,23 @@
         </div>
       {% endif %}
     {% endfor %}
+
+    {# Архивные копии: в состав дела и в печать не входят, но видны — иначе
+       оператор не может проверить, что именно система сочла неактуальным #}
+    {% if archived %}
+      <details class="archive">
+        <summary>Архивные копии ({{ archived|length }})</summary>
+        <div class="archive-note">Заменены более свежими версиями. На печать не выводятся.</div>
+        {% for f in archived %}
+          <div class="archive-row">
+            <div class="slot-file" title="{{ f.key }}" style="flex:1">{{ f.name }}</div>
+            <div class="archive-when">{{ f.last_modified }} · {{ f.reason }}</div>
+            <button class="icon-btn sm client-only" title="Открыть архивную копию"
+                    onclick='openDocument({{ f.storage_id }}, {{ f.key|tojson }}, {{ f.name|tojson }})'>👁</button>
+          </div>
+        {% endfor %}
+      </details>
+    {% endif %}
 
     <div class="section-title">История</div>
     {% if c.history %}

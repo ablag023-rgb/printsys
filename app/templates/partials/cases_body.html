@@ -83,7 +83,7 @@
           <td class="cell-provider" title="{{ c.provider }}">{{ c.provider or '—' }}</td>
           <td>
             {% if c.is_orphaned %}<span class="dot err" title="Файлы дела пропали с шары">Файлы пропали</span>
-            {% elif is_c and dup %}<span class="dot warn">Дубликаты</span>
+            {% elif dup %}<span class="dot warn" title="Не удалось выбрать версию документа — посмотрите состав дела">Требует внимания</span>
             {% elif is_c %}<span class="dot ok">Полное</span>
             {% elif miss|length == slots_cfg|selectattr('required')|list|length %}<span class="dot err">Нет файлов</span>
             {% else %}<span class="dot warn" title="{{ miss|join(', ') }}">Нет: {{ miss|join(', ') }}</span>

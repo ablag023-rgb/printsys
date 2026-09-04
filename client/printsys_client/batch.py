@@ -188,6 +188,11 @@ def print_batch(
             result.items.append(ItemResult(job.ksr, JobState.QUEUED, message="пакет на паузе"))
             continue
 
+        if getattr(case, "needs_attention", False):
+            # Не блокируем: решение печатать — за оператором. Но молчать
+            # нельзя, в деле лежат две редакции одного документа
+            notify(job.ksr, "ВНИМАНИЕ: сервер не смог выбрать версию документа "
+                            "— в деле обе редакции")
         notify(job.ksr, f"готовим {len(case.documents)} док.")
         try:
             prepared = prepare_case(case, settings, api.download, slot_trays,

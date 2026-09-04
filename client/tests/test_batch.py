@@ -343,3 +343,19 @@ def test_stuck_sending_can_be_resolved_by_operator(q):
     assert q.recover() == []                       # восстановление такое не трогает
     assert q.resolve(jid, "reprint") == 1
     assert q.batch(b)[0].state == JobState.QUEUED.value
+
+
+def test_ambiguous_case_warns_operator_before_printing(q):
+    """Дело, где сервер не смог выбрать версию, печатается с предупреждением.
+
+    Не блокируем — решение за оператором, — но молчать нельзя: в деле лежат
+    две редакции одного документа.
+    """
+    api, be = FakeAPI(), FakeBackend()
+    c = case("1")
+    c.needs_attention = True
+    lines = []
+    print_batch(api, be, [c], SETTINGS, queue=q, printer=be.printers[0],
+                on_progress=lambda k, m: lines.append(m))
+    assert any("не смог выбрать версию" in m for m in lines)
+    assert len(be.submitted) == 1, "печать не должна блокироваться"

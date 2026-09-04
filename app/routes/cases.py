@@ -127,6 +127,7 @@ async def case_drawer(ksr: str, request: Request, session: AsyncSession = Depend
             "is_complete": services.case_is_complete(c, slots_cfg),
             "missing": services.case_missing_slots(c, slots_cfg),
             "has_dup": services.case_has_duplicates(c),
+            "archived": services.case_archived_docs(c),
         },
     )
 

@@ -233,3 +233,11 @@ table.mini tr.row-done td { color: var(--text-muted); }
 /* Уведомление «Сохранено» в настройках рабочего места */
 .saved-note { opacity: 0; color: var(--ok); font-size: 12px; transition: opacity .2s; }
 .saved-note.show { opacity: 1; }
+
+/* Архивные копии документов: свёрнуты по умолчанию — в повседневной работе
+   это шум, разворачивают их только чтобы проверить выбор системы */
+.archive{margin-top:14px;border:1px solid var(--border);border-radius:8px;padding:8px 10px;background:var(--surface-2)}
+.archive summary{cursor:pointer;font-size:12px;font-weight:600;color:var(--text-muted);user-select:none}
+.archive-note{font-size:11px;color:var(--text-soft);margin:6px 0 8px}
+.archive-row{display:flex;align-items:center;gap:8px;padding:3px 0}
+.archive-when{font-size:11px;color:var(--text-soft);white-space:nowrap}

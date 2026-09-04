@@ -155,7 +155,16 @@ class Case(Base):
     service: Mapped[str] = mapped_column(String(64), default="")
 
     slots: Mapped[Dict[str, List[Dict[str, Any]]]] = mapped_column(JSON, default=dict)
-    # Хэш [(slot_id, storage_id, key, etag)]. Изменился — дело пересобрать.
+    # Отброшенные копии документов: [{storage_id, key, name, size, etag,
+    # last_modified, reason}]. В состав дела и в печать НЕ входят — хранятся,
+    # чтобы оператор мог проверить, что именно система сочла неактуальным.
+    archived: Mapped[List[Dict[str, Any]]] = mapped_column(JSON, default=list)
+    # Система не смогла выбрать версию сама (даты не различают копии, а
+    # содержимое разное). Выбор редакции справки — это сумма иска, молча
+    # решать такое нельзя.
+    needs_attention: Mapped[bool] = mapped_column(default=False, index=True)
+    # Хэш [(slot_id, storage_id, key, etag)] по АКТУАЛЬНЫМ версиям.
+    # Изменился — дело пересобрать. Архив в хэш не входит намеренно.
     composition_hash: Mapped[str] = mapped_column(String(64), default="", index=True)
 
     printed_at: Mapped[Optional[date]] = mapped_column(Date, nullable=True)

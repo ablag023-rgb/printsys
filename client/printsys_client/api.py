@@ -108,6 +108,11 @@ class Case:
     printed_at: Optional[str]
     submitted_at: Optional[str]
     documents: List[Document]
+    # Сервер не смог выбрать версию документа: даты копий совпали, содержимое
+    # разное. В деле обе редакции — печатать такое, не посмотрев, нельзя.
+    # Со значением по умолчанию: поле появилось позже, а старый сервер его
+    # не отдаёт — клиент обязан работать и с ним
+    needs_attention: bool = False
 
     @classmethod
     def from_json(cls, d: Dict[str, Any]) -> "Case":
@@ -118,6 +123,7 @@ class Case:
             is_complete=d.get("is_complete", False),
             missing_slots=d.get("missing_slots", []),
             is_stale=d.get("is_stale", False), is_orphaned=d.get("is_orphaned", False),
+            needs_attention=d.get("needs_attention", False),
             printed_at=d.get("printed_at"), submitted_at=d.get("submitted_at"),
             documents=[Document(**{
                 "slot_id": x["slot_id"], "slot_name": x["slot_name"],
