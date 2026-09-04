@@ -61,15 +61,27 @@ def main() -> int:
         if cfg.exists():
             cfg.unlink()
         docs = DIST / "Документы"
-        docs.mkdir(exist_ok=True)
         if args.docs:
             import shutil as sh
+            # Каталог очищаем ПЕРЕД копированием. Иначе к нему добавлялось
+            # содержимое прошлого прогона или скопированная руками папка, и в
+            # раздачу уезжал каждый документ дважды — под разными ключами, но
+            # с одним содержимым. В делах он и показывался дважды.
+            sh.rmtree(docs, ignore_errors=True)
+            docs.mkdir(parents=True)
             src = Path(args.docs)
             n = 0
             for f in sorted(src.rglob("*")):
-                if f.is_file():
-                    sh.copy2(f, docs / f.name); n += 1
+                if not f.is_file():
+                    continue
+                # Раскладку сохраняем: одноимённые файлы из разных папок при
+                # укладке в один каталог затирали друг друга
+                dst = docs / f.relative_to(src)
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                sh.copy2(f, dst); n += 1
             print(f"документов вложено: {n}")
+        else:
+            docs.mkdir(exist_ok=True)
         # База прошлого прогона в раздачу не едет
         old = DIST / "demo-data"
         if old.exists():
