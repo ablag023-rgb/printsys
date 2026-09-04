@@ -209,6 +209,9 @@
   function loadQueue() {
     api.queue_list().then((r) => {
       const box = el('queue-box');
+      // Любое действие над очередью заканчивается перерисовкой списка —
+      // значит здесь и только здесь счётчик обязан приходить в согласие с ним
+      setQueueBadge(r.jobs);
       el('q-resume').disabled = !(r.batches && r.batches.length);
       if (!r.jobs.length) {
         box.innerHTML = '<p class="muted">Очередь пуста, незавершённых пакетов нет.</p>';
@@ -295,15 +298,21 @@
   window.closeQueue = function () { el('queue-modal').classList.remove('show'); };
   window.closePreview = function () { el('preview-modal').classList.remove('show'); };
 
+  // Счётчик считается из ТОГО ЖЕ ответа, что рисует список: пока он обновлялся
+  // отдельным запросом только при запуске и после печати, отмена и разбор
+  // очереди его не трогали — список пустел, а цифра рядом с «Очередью»
+  // оставалась от старых данных
+  function setQueueBadge(jobs) {
+    const badge = el('queue-badge');
+    if (!badge) return;
+    const amb = (jobs || []).filter((j) => j.state === 'AMBIGUOUS').length;
+    badge.textContent = amb ? String(amb) : '';
+    badge.classList.toggle('show', amb > 0);
+  }
+
   function refreshQueueBadge() {
     if (!api) return;
-    api.queue_list().then((r) => {
-      const amb = r.jobs.filter((j) => j.state === 'AMBIGUOUS').length;
-      const badge = el('queue-badge');
-      if (!badge) return;
-      badge.textContent = amb ? String(amb) : '';
-      badge.classList.toggle('show', amb > 0);
-    });
+    api.queue_list().then((r) => setQueueBadge(r.jobs));
   }
 
   // ============== настройки рабочего места ==============
